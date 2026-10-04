@@ -1,0 +1,32 @@
+# There was no .gitignore in this repo, and `git ls-files` showed why that matters:
+# `.env`, `.env.bak.*` and all 5,500 files of `.venv/` were tracked. The repo has no
+# remote and two commits, so nothing has left this machine -- but the next `git add`
+# would have committed provider keys again. This stops that. It does not remove what
+# is already in history: untracking (`git rm --cached`) and rewriting the two commits
+# are separate decisions, and the second one is destructive, so neither is done here.
+
+# Credentials. Never tracked, in any form.
+.env
+.env.*
+!.env.example
+tools/.autobuild-env
+
+# Python environment and bytecode. Regenerable; 5,500 files of it.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node and build output.
+node_modules/
+dist/
+apps/desktop/tests/.build/
+
+# The build supervisor's own logs and lock.
+.autobuild/
+tools/.autobuild-stop
+
+# Local databases, captures and scratch.
+*.db
+*.db-wal
+*.db-shm

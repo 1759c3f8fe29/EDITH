@@ -1,0 +1,15 @@
+# Copy to tools/.autobuild-env, fill in, chmod 600. Gitignored, and sourced by the
+# supervisor only when the environment has no credential of its own -- so a supervisor
+# started from a shell that already has these exported needs no file at all.
+#
+# Missing credentials are fatal rather than survivable: a loop that restarts into the
+# same 401 forever is worse than one that stops and says why.
+export ANTHROPIC_AUTH_TOKEN=sk-...            # or ANTHROPIC_API_KEY
+export ANTHROPIC_BASE_URL=https://tabitoken.com
+export ANTHROPIC_MODEL=claude-opus-5-thinking
+
+# What authority a restarted session runs with. Empty (or unset) means it asks for
+# approval exactly as an interactive session would -- correct when you can see the
+# terminal, useless when you are asleep, because it will wait forever for an answer.
+# Uncomment to let unattended sessions edit files without asking:
+# export AUTOBUILD_CLAUDE_FLAGS='--permission-mode acceptEdits'

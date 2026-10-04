@@ -1,0 +1,324 @@
+@import "tailwindcss";
+
+/* NEXUS design tokens (§51-54, plus the reference images).
+ *
+ * The references are neon-heavy: glowing wires, particle spheres, saturated
+ * accents. §51 explicitly forbids "excessive glass effects, glowing borders, neon
+ * decoration, giant gradients everywhere, unnecessary particles, constant motion".
+ * Both are honoured by taking the *language* and applying it with restraint:
+ *
+ *   - Chamfered corners: kept. They are structural, cost nothing, and are the
+ *     single most recognisable thing about the reference. Done with clip-path,
+ *     not four rotated pseudo-elements.
+ *   - Accent: kept, and made themeable (the references show the same interface in
+ *     cyan and in crimson, which is the whole point of a token).
+ *   - Glow: reduced to a thin 1px accent border plus, at most, one soft outer
+ *     shadow on the *focused* element. Not on every panel.
+ *   - Particles: only in the orb, which §94 designates as the primary state
+ *     signature. Nowhere else.
+ *   - Motion: tied to state changes and hover, never ambient. `prefers-reduced-
+ *     motion` removes all of it.
+ *
+ * Colour never carries meaning alone (§92): every state that has a colour also
+ * has a label, an icon, or a shape.
+ */
+
+@theme {
+  /* Base: near-black, four steps of elevation. Not pure #000 -- a true black
+   * makes the chamfer edges invisible on OLED and kills the sense of layering. */
+  --color-void: #050607;
+  --color-base: #0a0c0e;
+  --color-panel: #101316;
+  --color-raised: #171b1f;
+  --color-line: #23282e;
+  --color-line-bright: #333a42;
+
+  /* Text: four levels. Anything below `dim` fails contrast on `panel`. */
+  --color-ink: #e8edf2;
+  --color-ink-soft: #a8b3bd;
+  --color-ink-dim: #6b7681;
+  --color-ink-faint: #464f58;
+
+  /* Semantic states. Each is paired with a label in the UI, never used alone. */
+  --color-ok: #3ddc97;
+  --color-warn: #f5a623;
+  --color-danger: #ff4d5e;
+  --color-info: #4aa8ff;
+
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", "SF Mono", ui-monospace, monospace;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+
+  /* The chamfer size. One number so every panel agrees. */
+  --chamfer: 10px;
+  --chamfer-sm: 6px;
+}
+
+/* Accent themes. The references show cyan and crimson; both ship, and the token
+ * indirection means a third costs one block. Set on <html data-accent="...">. */
+:root,
+:root[data-accent="cyan"] {
+  --accent: #22d3ee;
+  --accent-bright: #67e8f9;
+  --accent-dim: #0e7490;
+  --accent-glow: rgb(34 211 238 / 0.18);
+  --accent-ink: #062024;
+}
+
+:root[data-accent="crimson"] {
+  --accent: #ff3b4e;
+  --accent-bright: #ff7080;
+  --accent-dim: #9f1239;
+  --accent-glow: rgb(255 59 78 / 0.18);
+  --accent-ink: #2a0308;
+}
+
+:root[data-accent="amber"] {
+  --accent: #ffa726;
+  --accent-bright: #ffc46b;
+  --accent-dim: #b26a00;
+  --accent-glow: rgb(255 167 38 / 0.18);
+  --accent-ink: #2a1a02;
+}
+
+:root[data-accent="violet"] {
+  --accent: #a78bfa;
+  --accent-bright: #c4b5fd;
+  --accent-dim: #6d28d9;
+  --accent-glow: rgb(167 139 250 / 0.18);
+  --accent-ink: #1a0f2e;
+}
+
+@theme inline {
+  --color-accent: var(--accent);
+  --color-accent-bright: var(--accent-bright);
+  --color-accent-dim: var(--accent-dim);
+  --color-accent-ink: var(--accent-ink);
+}
+
+@layer base {
+  * {
+    /* Cheaper and more predictable than per-element borders in a dense UI. */
+    border-color: var(--color-line);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background: var(--color-void);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  /* Focus is never removed, only restyled. A keyboard user who cannot see focus
+   * cannot use the app at all (§55). */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--accent-dim);
+    color: var(--color-ink);
+  }
+
+  /* Scrollbars: visible enough to grab, quiet enough to ignore. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-bright);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 99px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-ink-faint);
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  /* The chamfer. clip-path on the element itself, so the cut is real and the
+   * background does not bleed past it. Borders cannot follow a clip-path, so a
+   * bordered panel layers a slightly larger clipped parent behind it. */
+  .chamfer {
+    clip-path: polygon(
+      var(--chamfer) 0,
+      100% 0,
+      100% calc(100% - var(--chamfer)),
+      calc(100% - var(--chamfer)) 100%,
+      0 100%,
+      0 var(--chamfer)
+    );
+  }
+
+  .chamfer-sm {
+    clip-path: polygon(
+      var(--chamfer-sm) 0,
+      100% 0,
+      100% calc(100% - var(--chamfer-sm)),
+      calc(100% - var(--chamfer-sm)) 100%,
+      0 100%,
+      0 var(--chamfer-sm)
+    );
+  }
+
+  /* All four corners cut, for the orb frame and status chips. */
+  .chamfer-all {
+    clip-path: polygon(
+      var(--chamfer) 0,
+      calc(100% - var(--chamfer)) 0,
+      100% var(--chamfer),
+      100% calc(100% - var(--chamfer)),
+      calc(100% - var(--chamfer)) 100%,
+      var(--chamfer) 100%,
+      0 calc(100% - var(--chamfer)),
+      0 var(--chamfer)
+    );
+  }
+
+  /* A bordered chamfered panel: outer element paints the border colour and is
+   * clipped, inner sits 1px in. One extra div, and the only way to get a
+   * 1px edge that follows a 45-degree cut without SVG. */
+  .panel {
+    background: var(--color-line);
+    padding: 1px;
+  }
+
+  .panel-body {
+    background: var(--color-panel);
+    height: 100%;
+  }
+
+  /* The uppercase monospace label from the references. Tracking is wide enough
+   * to read as a system label rather than shouting. */
+  .label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--color-ink-dim);
+  }
+
+  .label-accent {
+    color: var(--accent);
+  }
+
+  /* The leading marker from the references (a dot or diamond before a label). */
+  .marker::before {
+    content: "";
+    display: inline-block;
+    width: 4px;
+    height: 4px;
+    margin-right: 0.6em;
+    vertical-align: 0.15em;
+    background: currentColor;
+    transform: rotate(45deg);
+  }
+}
+
+/* The sphere's motion (§94). Three keyframes, declared once, driven entirely by
+ * inline `animation` shorthands in VoiceSphere so the *speed* can encode the state
+ * — EXECUTING turns visibly faster than THINKING. They are outside @layer on
+ * purpose: keyframes in a layer are not guaranteed to be reachable from inline
+ * styles.
+ *
+ * All three are switched off by the prefers-reduced-motion block below. A resting
+ * sphere is a correct sphere: READY and OFFLINE pass no animation at all. */
+@keyframes nexus-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes nexus-spin-reverse {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes nexus-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.92;
+  }
+  50% {
+    transform: scale(1.035);
+    opacity: 1;
+  }
+}
+
+/* A new activity row or headline arriving: one short fade, not a slide-in. §94 —
+ * motion tells the user something changed, then gets out of the way. */
+@keyframes nexus-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@layer utilities {
+  /* One soft accent glow, for the focused/active element only. */
+  .glow-accent {
+    box-shadow: 0 0 0 1px var(--accent-dim), 0 0 24px -6px var(--accent-glow);
+  }
+
+  .arrive {
+    animation: nexus-arrive 180ms ease-out;
+  }
+
+  /* Screen-reader-only text. Used wherever an icon or a spinner is the only
+   * visible content and the state still has to be announced (§55). */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  /* Every animation in the app opts in through this, so reduced-motion has one
+   * place to switch them all off (§55, §94). */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

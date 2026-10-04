@@ -1,0 +1,11 @@
+# Test-only dependencies for the NEXUS core.
+#
+#   .venv/bin/python -m pip install -r services/core/requirements-dev.txt
+#   cd services/core && python -m pytest
+#
+# No asyncio plugin on purpose: the async tests wrap their own bodies in
+# ``asyncio.run`` (the ``sync`` decorator), so the suite runs on a bare pytest and
+# cannot break because a plugin changed its event-loop policy.
+-r requirements.txt
+pytest>=9.1,<10
+pytest-timeout>=2.3,<3

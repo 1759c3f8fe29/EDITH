@@ -1,0 +1,29 @@
+{
+  "name": "nexus-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "NEXUS desktop interface. Runs in a browser against the local core, and unchanged inside Tauri.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test:wake": "tsc src/lib/wake.ts --target es2020 --module es2020 --outDir tests/.build --strict --types --skipLibCheck && mv tests/.build/wake.js tests/.build/wake.mjs && node tests/wake.check.mjs",
+    "test:speech": "tsc src/lib/speech.ts --target es2020 --module es2020 --outDir tests/.build --strict --types --skipLibCheck && mv tests/.build/speech.js tests/.build/speech.mjs && node tests/speech.check.mjs",
+    "test:automations": "tsc src/lib/automations.ts --target es2020 --module es2020 --outDir tests/.build --strict --types --skipLibCheck && mv tests/.build/automations.js tests/.build/automations.mjs && node tests/automations.check.mjs"
+  },
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.13",
+    "@types/react": "^19.1.10",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^5.0.1",
+    "tailwindcss": "^4.1.13",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.3"
+  }
+}
