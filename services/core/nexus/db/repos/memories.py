@@ -29,6 +29,12 @@ CATEGORIES: tuple[str, ...] = (
     "file",
     "device",
     "goal",
+    # How a recurring job is done, learned from the user's own completed tasks
+    # (task O8). A real category rather than a tag, because it is recalled
+    # differently: "how you did this last time" is context for a plan, where the
+    # others are facts about the user. Proposed by `nexus.ai.procedures`, approved
+    # like every other memory -- never stored straight from inference (§32).
+    "procedural",
 )
 
 

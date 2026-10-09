@@ -781,25 +781,72 @@ def _verify_clipboard_set(params: dict[str, Any], result: ToolResult) -> tuple[b
 )
 def clipboard_set(params: dict[str, Any]) -> ToolResult:
     text = str(params["text"])
+    failures: list[str] = []
     for name, write_cmd in _clipboard_writers():
         try:
-            # xclip holds the selection by forking; it must not keep our pipes.
-            proc = subprocess.run(
-                write_cmd, input=text, text=True, capture_output=True, timeout=5
-            )
-        except (OSError, subprocess.SubprocessError):
+            # No ``capture_output``, and that is load-bearing rather than a style
+            # choice. xclip and wl-copy **fork a child that keeps holding the
+            # selection** -- that is how a clipboard survives the program that set
+            # it. With stdout/stderr pipes attached, the forked child inherits the
+            # write ends, so ``communicate()`` waits for EOF that never comes:
+            # measured here at a hard 5-second timeout, every time, on a machine
+            # where the write itself takes 8 ms. The old code then swallowed the
+            # TimeoutExpired and told the user "none of wl-copy, xclip or xsel is
+            # installed" -- naming a missing program as the fix when the program
+            # was installed and had in fact already copied the text.
+            proc = subprocess.run(write_cmd, input=text, text=True, timeout=5)
+        except subprocess.TimeoutExpired:
+            # A writer that outlived the timeout has still handed the selection to
+            # its forked child; the write below is what decides, not the exit code.
+            pass
+        except (OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"{name}: {exc}")
             continue
-        if proc.returncode == 0:
+        else:
+            if proc.returncode != 0:
+                failures.append(f"{name}: exited {proc.returncode}")
+                continue
+
+        # Verify by reading it back, like every other write tool here. This is also
+        # what makes the timeout path above safe: if the text did not stick, the
+        # read-back fails and the tool still reports honestly.
+        read_back, _ = _read_clipboard_now()
+        if read_back == text:
             return ToolResult(
                 ok=True,
-                data={"length": len(text), "backend": name},
+                data={"length": len(text), "backend": name, "verified_by_read_back": True},
                 summary=f"Copied {len(text)} character(s) to the clipboard",
             )
+        failures.append(f"{name}: wrote, but the clipboard reads back differently")
+
+    detail = f" ({'; '.join(failures[:2])})" if failures else ""
     return ToolResult(
         ok=False,
-        error=("NEXUS cannot set the clipboard: none of wl-copy, xclip or xsel is "
-               "installed. Installing 'xclip' would enable it."),
+        error=(
+            "NEXUS could not set the clipboard. "
+            + (
+                "None of wl-copy, xclip or xsel is installed, so there is no program "
+                "to write it with. Installing 'xclip' would enable it."
+                if not _clipboard_writers()
+                else "A writer is installed but the write did not take."
+            )
+            + detail
+        ),
     )
+
+
+def _read_clipboard_now() -> tuple[str | None, str]:
+    """Read the clipboard back, using the same table ``clipboard.get`` uses."""
+    for name, read_cmd in _clipboard_readers():
+        try:
+            proc = subprocess.run(
+                read_cmd, text=True, capture_output=True, timeout=5
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            continue
+        if proc.returncode == 0:
+            return proc.stdout, ""
+    return None, "no reader produced a value"
 
 
 # --------------------------------------------------------------- notification

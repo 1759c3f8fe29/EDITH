@@ -486,6 +486,23 @@ CAPABILITIES: tuple[Capability, ...] = (
     # rule the model creates carries the model's scope, and a rule edited to need
     # more power than the stored scope is disarmed and labelled rather than
     # inheriting the trust the narrower version earned (schema v4).
+    # The audit recorded this observation kind as not existing at all. Reading other
+    # applications' notifications is among the most personal things on a desktop --
+    # codes, messages, medical results -- so it is medium rather than low, and every
+    # monitor that reads content defaults off (§56).
+    Capability(
+        name="notifications.read",
+        group="Awareness",
+        title="Read notifications",
+        description="Watch the notifications other applications show you.",
+        risk="medium",
+        reversible=True,
+        consequence=(
+            "NEXUS can read the notifications other applications show you, including "
+            "their text. Anything that looks like a password or key is counted but "
+            "never stored."
+        ),
+    ),
     Capability(
         name="automation.read",
         group="Automations",

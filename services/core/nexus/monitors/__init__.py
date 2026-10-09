@@ -32,6 +32,7 @@ from .base import (  # noqa: F401
 )
 from .bluetooth_monitor import BluetoothDevice, BluetoothMonitor, RadioState  # noqa: F401
 from .clipboard_monitor import ClipboardEntry, ClipboardMonitor, looks_like_credential  # noqa: F401
+from .notification_monitor import NotificationMonitor, parse_notify  # noqa: F401
 from .screen_monitor import ScreenMonitor  # noqa: F401
 from .supervisor import MAX_CONSECUTIVE_ERRORS, Supervisor, supervisor  # noqa: F401
 from .system_monitor import SystemMonitor  # noqa: F401
@@ -59,6 +60,8 @@ __all__ = [
     "UsbMonitor",
     "WindowMonitor",
     "looks_like_credential",
+    "NotificationMonitor",
+    "parse_notify",
     "setting",
     "status",
     "supervisor",

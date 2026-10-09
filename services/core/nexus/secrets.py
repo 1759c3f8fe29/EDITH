@@ -30,6 +30,12 @@ KNOWN_CREDENTIALS: tuple[str, ...] = (
     "NVIDIA_API_KEY",
     "MISTRAL_API_KEY",
     "GEMINI_API_KEY",
+    # Rotation pools. Each of these may hold several keys from different accounts
+    # -- ``OPENROUTER_API_KEY`` plus ``OPENROUTER_API_KEY_1..N`` -- which the
+    # provider layer spreads requests across so one account's rate limit is not
+    # the ceiling for the whole install. Read through ``pool()``, never by name.
+    "OPENROUTER_API_KEY",
+    "GROQ_API_KEY",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
     # The gateway-style spelling of the Anthropic credential. Listed as its own
@@ -340,6 +346,40 @@ def get(name: str) -> str | None:
         value = _env_values().get(name) or os.environ.get(name)
     register_secret(value)
     return value
+
+
+def pool(name: str) -> list[str]:
+    """Every key configured for one provider, in a stable order.
+
+    Providers with several accounts -- OpenRouter and Groq here -- are declared as
+    ``NAME`` and/or ``NAME_1``, ``NAME_2``, ... so a user with a hundred accounts
+    does not have to invent a naming scheme. The unsuffixed name sorts first, so
+    a single-key install behaves exactly as before and there is no special case
+    for "only one key".
+
+    The values are gathered but *not* returned as a set: order matters, because the
+    caller rotates through the list and a set would make the rotation order change
+    between processes -- which turns "spread the load" into "hit a random account
+    and hope".
+
+    Keyring entries are looked up for each name, so a key stored properly is
+    preferred over the same key in the plain-text ``.env``, matching ``get()``.
+    """
+    found: list[tuple[int, str, str]] = []
+
+    def consider(env_name: str, rank: int) -> None:
+        value = _keyring().get(env_name) or _env_values().get(env_name) \
+            or os.environ.get(env_name)
+        if value:
+            register_secret(value)
+            found.append((rank, env_name, value.strip()))
+
+    consider(name, 0)
+    for index in range(1, 101):
+        consider(f"{name}_{index}", index)
+
+    found.sort(key=lambda item: item[0])
+    return [value for _rank, _n, value in found]
 
 
 def source_of(name: str) -> Source:

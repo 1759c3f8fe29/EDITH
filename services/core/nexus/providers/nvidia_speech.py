@@ -53,7 +53,7 @@ import time
 import wave
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from .. import secrets
 from ..config import settings
@@ -89,6 +89,12 @@ DEFAULT_LANGUAGE = "en-US"
 #: the audio is resampled to it on the way in rather than hoping the recording
 #: already matches.
 ASR_SAMPLE_RATE = 16_000
+
+#: How much PCM is pushed into Riva per streaming step. 8 KB at 16 kHz mono is
+#: 4096 samples -- a quarter of a second of audio. Small enough that a partial
+#: lands while the speaker is still talking, large enough that the per-chunk gRPC
+#: overhead does not dominate a short recording.
+STREAM_CHUNK_BYTES = 8_192
 
 #: One synthesis request's ceiling. Long answers are spoken in segments by
 #: :mod:`nexus.ai.voice_stream`, so this bounds a segment, not an answer.
@@ -405,6 +411,143 @@ class NvidiaSpeechClient:
             raise _translate(exc, endpoint) from exc
 
     # ------------------------------------------------------------ speech to text
+
+    async def transcribe_stream(
+        self,
+        audio: str | Path | bytes,
+        *,
+        model: str | None = None,
+        language: str | None = None,
+        chunk_bytes: int = STREAM_CHUNK_BYTES,
+    ) -> AsyncIterator[Transcript]:
+        """Transcribe with live partial results, yielding as they firm up.
+
+        The difference from :meth:`transcribe` is the whole reason the voice
+        audits kept recording "hearing is per-utterance": this yields a
+        ``Transcript`` repeatedly for one recording, with ``is_final=False`` while
+        the words may still change and ``is_final=True`` once Riva has committed
+        them. A caller can therefore show the sentence *forming* rather than
+        waiting for the speaker to stop.
+
+        Two things make this honest rather than merely newer. Partials are
+        **replacements, not appends** -- a caller must show the latest one, never
+        concatenate them, because Riva revises as more audio arrives and joined
+        partials read as the machine repeatedly changing its mind. And a partial
+        carries its ``stability``, so a UI that wants to avoid flicker can hold
+        back anything below a threshold instead of guessing.
+
+        The whole recording is still sent as one stream: this is streaming
+        *recognition* over a finished clip, not a live microphone feed. A live feed
+        needs the microphone held open and pushed into ``audio_chunks`` as it
+        arrives, which is a change to the capture path rather than to this client.
+        """
+        data = await asyncio.to_thread(self._read_audio, audio)
+        endpoint = _endpoint("stt", model)
+        spoken = (language or "").strip() or DEFAULT_LANGUAGE
+        pcm = await asyncio.to_thread(_prepare_for_asr, data, filename="")
+
+        if not pcm:
+            raise RequestRejected(
+                "That recording decoded to no audio at all.", provider=PROVIDER_ID
+            )
+
+        service = self._service(endpoint, "asr")
+        import riva.client as riva
+
+        config = riva.StreamingRecognitionConfig(
+            config=riva.RecognitionConfig(
+                encoding=riva.AudioEncoding.LINEAR_PCM,
+                language_code=spoken,
+                sample_rate_hertz=ASR_SAMPLE_RATE,
+                audio_channel_count=1,
+                max_alternatives=1,
+                enable_automatic_punctuation=True,
+            ),
+            # The flag this whole method exists for. Without it Riva answers once,
+            # at the end, and the method would be a slower spelling of transcribe().
+            interim_results=True,
+        )
+
+        chunks = [
+            pcm[offset : offset + chunk_bytes]
+            for offset in range(0, len(pcm), chunk_bytes)
+        ]
+
+        started = time.monotonic()
+        # Riva's generator is a blocking gRPC iterator. It is drained on a worker
+        # thread and handed back through a queue, because iterating it on the event
+        # loop would stall every other task for the length of the recording --
+        # including the SSE stream the transcript is being shown in.
+        queue: asyncio.Queue[Any] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        sentinel = object()
+
+        def drain() -> None:
+            try:
+                for response in service.streaming_response_generator(
+                    audio_chunks=iter(chunks), streaming_config=config
+                ):
+                    loop.call_soon_threadsafe(queue.put_nowait, response)
+            except BaseException as exc:  # noqa: BLE001 - re-raised on the consumer
+                loop.call_soon_threadsafe(queue.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, sentinel)
+
+        worker = asyncio.create_task(asyncio.to_thread(drain))
+        try:
+            while True:
+                item = await queue.get()
+                if item is sentinel:
+                    break
+                if isinstance(item, BaseException):
+                    # ``_translate`` is module-level, like ``transcribe`` uses it.
+                    raise _translate(item, endpoint)
+                for result in getattr(item, "results", []) or []:
+                    alternatives = getattr(result, "alternatives", None)
+                    if not alternatives:
+                        continue
+                    text = (alternatives[0].transcript or "").strip()
+                    if not text:
+                        continue
+                    yield Transcript(
+                        text=text,
+                        model=endpoint.model,
+                        language=spoken,
+                        is_final=bool(getattr(result, "is_final", False)),
+                        stability=float(getattr(result, "stability", 0.0) or 0.0),
+                        latency_ms=int((time.monotonic() - started) * 1000),
+                    )
+        finally:
+            # A consumer that stops early (the user interrupted) must not leave the
+            # worker draining a stream nobody reads.
+            if not worker.done():
+                worker.cancel()
+
+    def _read_audio(self, audio: str | Path | bytes) -> bytes:
+        """Path-or-bytes to bytes, with the same refusals ``transcribe`` makes."""
+        if isinstance(audio, (str, Path)):
+            path = Path(audio).expanduser()
+            if not path.is_file():
+                raise RequestRejected(
+                    f"There is no audio file at {path}.", provider=PROVIDER_ID
+                )
+            data = path.read_bytes()
+        else:
+            data = bytes(audio)
+
+        if not data:
+            raise RequestRejected(
+                "That recording is empty, so there is nothing to transcribe.",
+                provider=PROVIDER_ID,
+            )
+        if len(data) > MAX_AUDIO_BYTES:
+            raise RequestRejected(
+                f"That recording is {len(data) / 1_000_000:.1f} MB, above the "
+                f"{MAX_AUDIO_BYTES // 1_000_000} MB NEXUS will send. Split it into "
+                "shorter pieces.",
+                provider=PROVIDER_ID,
+            )
+        return data
 
     async def transcribe(
         self,

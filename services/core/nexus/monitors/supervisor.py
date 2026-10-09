@@ -36,7 +36,7 @@ MAX_CONSECUTIVE_ERRORS = 3
 #: Monitors that observe the user rather than the machine. Used by ``watching`` so
 #: the indicator reflects "something is looking at what I am doing", which is a
 #: different question from "a background task is running".
-_OBSERVES_USER = {"screen", "window", "clipboard"}
+_OBSERVES_USER = {"screen", "window", "clipboard", "notifications"}
 
 #: Task key for the retention sweep. Contains a colon so it can never collide
 #: with a monitor id, and is filtered out of everything the user sees -- it is
@@ -372,6 +372,7 @@ def supervisor() -> Supervisor:
         _SUPERVISOR = Supervisor()
         from .bluetooth_monitor import BluetoothMonitor
         from .clipboard_monitor import ClipboardMonitor
+        from .notification_monitor import NotificationMonitor
         from .screen_monitor import ScreenMonitor
         from .system_monitor import SystemMonitor
         from .usb_monitor import UsbMonitor
@@ -383,6 +384,7 @@ def supervisor() -> Supervisor:
                 WindowMonitor(),
                 ScreenMonitor(),
                 ClipboardMonitor(),
+                NotificationMonitor(),
                 UsbMonitor(),
                 BluetoothMonitor(),
             ]

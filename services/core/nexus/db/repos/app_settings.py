@@ -67,6 +67,10 @@ DEFAULTS: dict[str, Any] = {
     # reorder candidates the router already judged usable, and every reorder is
     # named in the decision's reason, so it can never be a silent substitution.
     "router_learning_enabled": True,
+    # Mirrors the other content monitors: off until the user asks, because this one
+    # reads what other applications are telling them.
+    "monitor_notifications_enabled": False,
+    "monitor_notifications_interval_seconds": 30.0,
     # The main model. Conversation, planning and tool calling go here first; the
     # per-job keys below only override a single kind of work. Stored as settings
     # rather than constants so the user can change what "main" means without a

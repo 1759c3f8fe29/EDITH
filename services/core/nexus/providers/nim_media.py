@@ -85,6 +85,15 @@ class Transcript:
     words: int = 0
     latency_ms: int = 0
     raw_keys: list[str] = field(default_factory=list)
+    #: Streaming only. ``True`` once the recogniser has committed these words and
+    #: will not revise them; ``False`` while they may still change. Defaults True
+    #: so a one-shot transcription is a final result, which it is -- the
+    #: alternative would make every existing caller's transcript look provisional.
+    is_final: bool = True
+    #: Streaming only, 0.0..1.0: how settled this partial is. Riva reports it and
+    #: it is passed through rather than derived, because a UI that wants to avoid
+    #: flicker needs the recogniser's own confidence, not a guess at it.
+    stability: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,6 +103,10 @@ class Transcript:
             "duration_s": self.duration_s,
             "words": self.words,
             "latency_ms": self.latency_ms,
+            # Emitted always, because a consumer cannot tell a partial from a final
+            # result without it and would otherwise have to concatenate partials.
+            "is_final": self.is_final,
+            "stability": self.stability,
         }
 
 

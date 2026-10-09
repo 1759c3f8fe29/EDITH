@@ -198,6 +198,35 @@ RULES: dict[str, Rule] = {
         importance=0.52, urgency=0.35, actionability=0.70, confidence=0.75,
         memorable=False, dull_during=("coding", "watching", "call"),
     ),
+    # -- notifications -------------------------------------------------------
+    # What *other applications* are telling the user. This is the one observation
+    # kind whose subject is somebody else's software rather than this machine, and
+    # the scores are shaped by a hard fact about the stream: a desktop produces far
+    # more notifications than it produces anything else, and most of them are about
+    # the user's own work, which they already saw.
+    #
+    # So importance is moderate and actionability is deliberately low. A build
+    # finishing is worth one quiet line; it is almost never something NEXUS should
+    # act on, and a notification monitor that treated every toast as actionable
+    # would be the loudest possible feature. The disposition this lands on with
+    # default relevance is ``log`` rather than ``notify``, which is correct: the
+    # value of watching notifications is that NEXUS *knows*, so a later question
+    # ("did anything come in while I was away?") has an answer -- not that it
+    # interrupts to relay each one.
+    #
+    # Dulled during a call for the same reason: relaying a message notification
+    # while the user is already talking to somebody is precisely the interruption
+    # the attention model exists to prevent. Not dulled during coding or watching --
+    # a build result is genuinely useful mid-task, and the scoring layer's relevance
+    # discount already handles "this is not about what you are doing".
+    #
+    # The urgency the desktop itself attached still moves the score: the monitor
+    # maps a critical notification to ``severity="alert"``, and SEVERITY_SCALE
+    # lifts it from there, so a disk-failure toast is not scored like a Slack ping.
+    "system.notification": Rule(
+        importance=0.42, urgency=0.30, actionability=0.25, confidence=0.95,
+        memorable=True, dull_during=("call",),
+    ),
     # -- network -------------------------------------------------------------
     # Everything the assistant does over the network stops working, so it is
     # important; almost nothing can be done about it locally, so it is not
