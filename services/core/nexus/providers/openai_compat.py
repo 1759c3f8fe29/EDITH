@@ -768,3 +768,308 @@ class MistralProvider(OpenAICompatible):
                 notes="Vision fallback for when NVIDIA's vision endpoints are unavailable.",
             ),
         )
+
+
+class GroqProvider(OpenAICompatible):
+    """Groq. Very fast inference, and the fastest speech-to-text measured here.
+
+    Two things about this provider are not obvious and both cost real time to find.
+
+    **It sits behind Cloudflare, which rejects library User-Agents.** The default
+    ``urllib``/``httpx`` UA gets ``403 error code: 1010`` -- a response that looks
+    exactly like a bad or expired key and is not one. Measured on this machine: all
+    four keys failed identically until a browser UA was sent, and then all four
+    worked on the first try. The failure message here deliberately does *not* say
+    "your key is wrong", because that is the wrong conclusion and the one a person
+    naturally draws.
+
+    **It is the fastest speech-to-text measured here.** ``whisper-large-v3-turbo``
+    transcribed a sentence in **0.55 s** against NVIDIA Parakeet's **7.87 s** --
+    fourteen times faster, same transcript -- so Groq heads the ``stt`` chain. The
+    reason is a measurement rather than a preference, and it is recorded so the
+    order is not later "tidied" back for being unfamiliar.
+
+    Several accounts are supported: :func:`nexus.secrets.pool` collects
+    ``GROQ_API_KEY``, ``GROQ_API_KEY_1``, ``GROQ_API_KEY_2`` ... and requests rotate
+    across them, so one account's rate limit is not the ceiling for the install.
+    """
+
+    id = "groq"
+    name = "Groq"
+    credential = "GROQ_API_KEY"
+    console_url = "https://console.groq.com/keys"
+    base_url = "https://api.groq.com/openai/v1"
+    supports_stream_usage = True
+
+    MAIN_MODEL = "openai/gpt-oss-120b"
+
+    #: Groq's edge rejects a request whose User-Agent looks like a library. The
+    #: same browser string `nexus.tools.browser` sends, for the same reason.
+    USER_AGENT = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
+    )
+
+    def __init__(self) -> None:
+        super().__init__()
+        #: Which account's key serves the next request. Rotated per call rather
+        #: than per process, so a burst spreads across accounts instead of
+        #: exhausting the first one and only then discovering the rest.
+        self._cursor = 0
+
+    # ------------------------------------------------------------- credentials
+
+    def has_credential(self) -> bool:
+        return bool(secrets.pool(self.credential))
+
+    def _key(self) -> str:
+        keys = secrets.pool(self.credential)
+        if not keys:
+            raise MissingCredential(
+                f"No {self.name} API key is configured. Add one in Settings -> Providers.",
+                provider=self.id,
+            )
+        # Round-robin. `_key` is called once per request, which is the natural place
+        # for it -- and a single-key install is unaffected, because a one-element
+        # list wraps the cursor onto itself.
+        key = keys[self._cursor % len(keys)]
+        self._cursor += 1
+        return key
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._key()}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            # Load-bearing: without a browser-shaped UA, Groq's edge answers 403
+            # "error code: 1010" for every key and it reads as an auth failure.
+            "User-Agent": self.USER_AGENT,
+        }
+
+    def account_count(self) -> int:
+        """How many keys are in the pool, for the Settings screen to report."""
+        return len(secrets.pool(self.credential))
+
+    @property
+    def models(self) -> tuple[ModelSpec, ...]:
+        return (
+            ModelSpec(
+                id=self.MAIN_MODEL,
+                provider=self.id,
+                label="GPT-OSS 120B",
+                context_window=131_072,
+                max_output_tokens=32_768,
+                strengths=("reasoning", "coding", "instruction_following"),
+                latency="fast",
+                free=True,
+                notes=(
+                    "Groq-hosted open-weight model. Groq's value is inference speed "
+                    "rather than model size: this answers far faster than the "
+                    "NVIDIA-hosted equivalent, which is why it backs the fast chains."
+                ),
+            ),
+            ModelSpec(
+                id="openai/gpt-oss-20b",
+                provider=self.id,
+                label="GPT-OSS 20B",
+                context_window=131_072,
+                max_output_tokens=32_768,
+                strengths=("fast", "cheap", "instruction_following"),
+                latency="fast",
+                free=True,
+                notes="The small sibling: titles, classification, one-line work.",
+            ),
+            ModelSpec(
+                id="moonshotai/kimi-k2-instruct",
+                provider=self.id,
+                label="Kimi K2 (Groq)",
+                context_window=131_072,
+                max_output_tokens=16_384,
+                strengths=("coding", "reasoning"),
+                latency="fast",
+                free=True,
+                notes=(
+                    "Groq's route to the Kimi family. Worth knowing because the "
+                    "NVIDIA-hosted 'moonshotai/kimi-k3' measured as returning nothing "
+                    "at all on this key, so this is the working path to a model the "
+                    "catalogue used to name."
+                ),
+            ),
+        )
+
+    def speech_models(self) -> tuple[ModelSpec, ...]:
+        """Speech is a separate surface: not chat, and not routed like chat."""
+        return (
+            ModelSpec(
+                id="whisper-large-v3-turbo",
+                provider=self.id,
+                label="Whisper Large v3 Turbo",
+                context_window=0,
+                max_output_tokens=0,
+                strengths=("fast",),
+                latency="fast",
+                free=True,
+                notes=(
+                    "Speech to text. Measured 0.55 s for a sentence against NVIDIA "
+                    "Parakeet's 7.87 s on this machine."
+                ),
+            ),
+            ModelSpec(
+                id="whisper-large-v3",
+                provider=self.id,
+                label="Whisper Large v3",
+                context_window=0,
+                max_output_tokens=0,
+                strengths=("reasoning",),
+                latency="medium",
+                free=True,
+                notes="The accurate sibling; slower, better on accents and noise.",
+            ),
+        )
+
+
+class OpenRouterProvider(OpenAICompatible):
+    """OpenRouter: one endpoint, many models, many accounts.
+
+    OpenRouter is a gateway rather than a lab. It serves other people's models
+    through one OpenAI-shaped API, which makes it the cheapest way to reach a model
+    whose own provider is not configured here -- and the reason three of the models
+    in this catalogue come from it rather than from their authors.
+
+    **Accounts rotate.** ``secrets.pool("OPENROUTER_API_KEY")`` collects
+    ``OPENROUTER_API_KEY``, ``_1``, ``_2`` ... and each request takes the next. With
+    a pool the ceiling is the sum of the accounts rather than the smallest of them,
+    which is the whole point of having more than one.
+
+    **Two headers are required and neither is obvious.** ``HTTP-Referer`` and
+    ``X-Title`` identify the calling application. They are optional in the
+    documentation and load-bearing in practice for a free-tier account: OpenRouter
+    uses them to attribute traffic, and requests without them are the ones that get
+    deprioritised. They are sent on every call.
+
+    **A ``:free`` suffix is not cosmetic.** ``vendor/model:free`` routes to a
+    rate-limited free tier, and ``vendor/model`` to a paid one. Both appear in this
+    catalogue with their suffixes intact, because stripping one "for tidiness" would
+    silently start charging for something the user chose because it was free.
+    """
+
+    id = "openrouter"
+    name = "OpenRouter"
+    credential = "OPENROUTER_API_KEY"
+    console_url = "https://openrouter.ai/settings/keys"
+    base_url = "https://openrouter.ai/api/v1"
+    supports_stream_usage = True
+
+    MAIN_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+
+    #: Attribution headers OpenRouter asks for. Sent on every request; a free-tier
+    #: account that omits them is the one that gets deprioritised.
+    APP_TITLE = "NEXUS"
+    APP_REFERER = "https://github.com/local/nexus"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._cursor = 0
+
+    # ------------------------------------------------------------- credentials
+
+    def has_credential(self) -> bool:
+        return bool(secrets.pool(self.credential))
+
+    def _key(self) -> str:
+        keys = secrets.pool(self.credential)
+        if not keys:
+            raise MissingCredential(
+                f"No {self.name} API key is configured. Add one in Settings -> Providers.",
+                provider=self.id,
+            )
+        key = keys[self._cursor % len(keys)]
+        self._cursor += 1
+        return key
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._key()}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "HTTP-Referer": self.APP_REFERER,
+            "X-Title": self.APP_TITLE,
+        }
+
+    def account_count(self) -> int:
+        return len(secrets.pool(self.credential))
+
+    @property
+    def models(self) -> tuple[ModelSpec, ...]:
+        return (
+            ModelSpec(
+                id=self.MAIN_MODEL,
+                provider=self.id,
+                label="Nemotron 3 Super 120B (free)",
+                context_window=128_000,
+                max_output_tokens=16_384,
+                strengths=("reasoning", "instruction_following"),
+                latency="medium",
+                free=True,
+                notes=(
+                    "The same model NVIDIA serves directly, reached through "
+                    "OpenRouter's free tier. Useful precisely when the NVIDIA key is "
+                    "rate-limited, which is a different failure from the model being "
+                    "down."
+                ),
+            ),
+            ModelSpec(
+                id="nvidia/nemotron-3-ultra-550b-a55b:free",
+                provider=self.id,
+                label="Nemotron 3 Ultra 550B (free)",
+                context_window=128_000,
+                max_output_tokens=16_384,
+                strengths=("reasoning", "coding"),
+                latency="slow",
+                free=True,
+                notes="The heaviest free model on this route; worth waiting for on hard work.",
+            ),
+            ModelSpec(
+                id="thinkingmachines/inkling:free",
+                provider=self.id,
+                label="Inkling (free)",
+                context_window=128_000,
+                max_output_tokens=16_384,
+                strengths=("reasoning",),
+                latency="medium",
+                free=True,
+                notes=(
+                    "Reachable only through OpenRouter -- Thinking Machines does not "
+                    "expose an API NEXUS can call directly."
+                ),
+            ),
+            # Paid frontier models. Present because the user has credit, and *not*
+            # in any chain: a paid model should be chosen deliberately rather than
+            # selected by a fallback the user never saw.
+            ModelSpec(
+                id="openai/gpt-6-sol",
+                provider=self.id,
+                label="GPT-6 Sol",
+                context_window=400_000,
+                max_output_tokens=32_768,
+                strengths=("reasoning", "coding", "instruction_following", "long_context"),
+                latency="medium",
+                free=False,
+                notes=(
+                    "Frontier paid model. Deliberately in no chain: it costs real "
+                    "credit per call, so it is chosen by the user rather than "
+                    "reached by a fallback. Pin it in Settings -> Models to use it."
+                ),
+            ),
+            ModelSpec(
+                id="openai/gpt-6-luna",
+                provider=self.id,
+                label="GPT-6 Luna",
+                context_window=400_000,
+                max_output_tokens=32_768,
+                strengths=("reasoning", "coding", "fast"),
+                latency="fast",
+                free=False,
+                notes="The faster of the two GPT-6 routes. Paid; pin it to use it.",
+            ),
+        )

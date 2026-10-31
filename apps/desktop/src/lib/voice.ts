@@ -122,6 +122,8 @@ export type ConverseInput = {
   conversationId?: string | null;
   projectId?: string | null;
   mode?: string | null;
+  /** Direct model key (provider:model) to bypass the router. Empty = auto (use router). */
+  model?: string | null;
   /** Empty means the `tts_voice` setting, then the provider default. */
   voice?: string | null;
   /** False runs the same turn with synthesis off -- a choice, not a limitation. */
@@ -148,6 +150,7 @@ export function startConverse(
       conversation_id: input.conversationId ?? null,
       project_id: input.projectId ?? null,
       mode: input.mode ?? null,
+      model: input.model ?? null,
       voice: input.voice ?? null,
       speak: input.speak ?? true,
     },

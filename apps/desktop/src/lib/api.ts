@@ -1211,6 +1211,8 @@ export const api = {
         method: "POST",
         body,
       }),
+    screenFrames: () =>
+      request<{ frames: Array<{ path: string; bytes: number; taken_at: string }>; available: boolean; reason?: string }>("/api/monitors/screen/frames"),
   },
 
   conversations: {

@@ -23,6 +23,12 @@ Three rules from the spec shape the module (TASKS.md L10, doc2 §31, §82):
 
   user can argue with the rule, not with the assistant.
 
+**Screen awareness (Ultron-level AI).** When the screen monitor reports a
+meaningful change, the engine proactively offers to describe what's on screen
+via the ``screen.look`` tool. This is a *proposal*, not an action -- the user
+must accept. The offer respects quiet hours, rate limits, and the attention
+model (dulled during "watching" and "call" per the scoring rules).
+
 What it deliberately does not do: call a model, run a tool, or change state.
 ``act`` and ``investigate`` dispositions appear verbatim in the payload (the
 scoring layer's opinion is information), but the engine acts on neither. That
@@ -54,6 +60,7 @@ from .events import bus
 from .scoring import CRITICAL_URGENCY, Attention, Judgement, RateGate, score
 from ..db.repos import activity, app_settings
 from ..monitors.base import Observation
+from ..tools.registry import tool as tool_registry
 
 log = get_logger("proactive")
 
@@ -77,6 +84,29 @@ HELD_LIMIT = 50
 #: in the activity repo's KINDS tuple -- that tuple drives list filters, not
 #: validation, and a suggestion IS activity the user can see and search.
 ACTIVITY_KIND = "proactive"
+
+#: Minimum perceptual change percentage to trigger a screen description offer.
+#: The screen monitor uses 8% by default; we only offer when change is noticeable.
+SCREEN_CHANGE_OFFER_THRESHOLD = 8.0
+
+#: Cooldown for screen change offers (seconds) -- separate from the general gate.
+#: Screen changes can be frequent; we don't want to offer every time.
+SCREEN_OFFER_COOLDOWN = 180.0
+
+#: Cooldown for clipboard credential offers (seconds)
+CLIPBOARD_OFFER_COOLDOWN = 300.0
+
+#: Cooldown for notification alert offers (seconds)
+NOTIFICATION_OFFER_COOLDOWN = 120.0
+
+#: Cooldown for system resource alert offers (seconds)
+SYSTEM_OFFER_COOLDOWN = 600.0
+
+#: Cooldown for window context switch offers (seconds)
+CONTEXT_SWITCH_OFFER_COOLDOWN = 300.0
+
+#: Continuous evaluation interval (seconds) -- how often to synthesize across sources
+CONTINUOUS_EVAL_INTERVAL = 60.0
 
 
 # ------------------------------------------------------------------- settings
@@ -133,10 +163,21 @@ def _in_quiet_hours(now: datetime | None = None) -> bool:
 class _EngineState:
     task: asyncio.Task[None] | None = None
     subscriber: asyncio.Task[None] | None = None
+    continuous_task: asyncio.Task[None] | None = None
     attention: Attention = field(default_factory=Attention)
     #: The one gate for all rules; the per-rule key is the judgement's dedupe
     #: key or kind, exactly as RateGate keys internally.
     gate: RateGate = field(default_factory=lambda: RateGate(cooldown_seconds=600.0))
+    #: Separate gate for screen change offers to avoid spamming.
+    screen_gate: RateGate = field(default_factory=lambda: RateGate(cooldown_seconds=SCREEN_OFFER_COOLDOWN))
+    #: Separate gate for clipboard credential offers
+    clipboard_gate: RateGate = field(default_factory=lambda: RateGate(cooldown_seconds=CLIPBOARD_OFFER_COOLDOWN))
+    #: Separate gate for notification alert offers
+    notification_gate: RateGate = field(default_factory=lambda: RateGate(cooldown_seconds=NOTIFICATION_OFFER_COOLDOWN))
+    #: Separate gate for system resource alert offers
+    system_gate: RateGate = field(default_factory=lambda: RateGate(cooldown_seconds=SYSTEM_OFFER_COOLDOWN))
+    #: Separate gate for window context switch offers
+    context_gate: RateGate = field(default_factory=lambda: RateGate(cooldown_seconds=CONTEXT_SWITCH_OFFER_COOLDOWN))
     consecutive_errors: int = 0
     stopped_reason: str = ""
     #: Suggestions held because they arrived during quiet hours.
@@ -146,6 +187,11 @@ class _EngineState:
     proposed: int = 0
     suppressed: int = 0
     released_from_hold: int = 0
+    screen_offers: int = 0
+    clipboard_offers: int = 0
+    notification_offers: int = 0
+    system_offers: int = 0
+    context_offers: int = 0
     last: dict[str, Any] | None = None
 
 
@@ -197,6 +243,88 @@ def _propose(judgement: Judgement, summary: str, *, suppressed: int = 0) -> None
     _deliver(payload)
 
 
+def _offer_screen_description(observation: Observation, attention: Attention) -> None:
+    """Proactively offer to describe what's on screen when a meaningful change occurs.
+
+    This is the Ultron-level AI feature: NEXUS notices the screen changed and
+    proactively asks "Want me to tell you what's on your screen?" -- but only
+    when the change is significant and the user isn't in a mode where they'd
+    find it annoying (watching/call are dulled per scoring rules).
+    """
+    # Only offer for screen.change observations with perceptual detection
+    if observation.kind != "screen.change":
+        return
+
+    data = observation.data or {}
+    change_percent = data.get("change_percent")
+    detection = data.get("detection")
+
+    # Only offer if perceptual detection found a meaningful change
+    if detection != "perceptual" or change_percent is None:
+        return
+
+    # Threshold check - only offer for noticeable changes
+    if change_percent < SCREEN_CHANGE_OFFER_THRESHOLD:
+        return
+
+    # Respect attention: dull_during includes "watching" and "call" for screen.change
+    if attention.activity in ("watching", "call"):
+        return
+
+    # Don't offer if assistant is speaking
+    if attention.speaking:
+        return
+
+    # Use separate gate for screen offers to avoid spam
+    from .scoring import Judgement, Score, DISPOSITIONS
+
+    # Create a synthetic judgement for the screen offer
+    screen_judgement = Judgement(
+        kind="screen.change",
+        score=Score(
+            importance=0.4,
+            urgency=0.2,
+            confidence=0.8,
+            relevance=1.0 if attention.focus_topic.lower() in str(observation.data).lower() else 0.8,
+            actionability=0.5,  # User can act by accepting the offer
+        ),
+        disposition="notify",
+        reasons=("screen changed meaningfully", f"{change_percent:.0f}% perceptual difference"),
+        dedupe_key="screen.change.offer",
+    )
+
+    # Check screen-specific gate
+    aggregate = _state.screen_gate.offer(screen_judgement, "Screen changed — want me to describe what's on it?")
+    if aggregate is None:
+        _state.suppressed += 1
+        return
+
+    # Master switch gates delivery
+    if not _enabled():
+        _state.suppressed += 1
+        return
+
+    # Build the proactive suggestion payload
+    payload = {
+        "judgement": screen_judgement.to_dict(),
+        "summary": "Screen changed — want me to describe what's on it?",
+        "suppressed": aggregate.suppressed,
+        "action": {
+            "tool": "screen.look",
+            "params": {"question": "What is on this screen right now?", "target": "screen"},
+            "label": "Describe screen",
+        },
+    }
+
+    if _in_quiet_hours():
+        _state.held.append(payload)
+        del _state.held[:-HELD_LIMIT]
+        return
+
+    _deliver(payload)
+    _state.screen_offers += 1
+
+
 # ------------------------------------------------------------------ the engine
 
 
@@ -228,6 +356,23 @@ async def _handle_observation(payload: dict[str, Any]) -> None:
 
     judgement = score(observation, attention)
     _state.offered += 1
+
+    # Separate: proactively offer screen description for meaningful changes
+    # (these run regardless of the main observation's disposition)
+    _offer_screen_description(observation, attention)
+
+    # Separate: proactively offer for clipboard credentials
+    await _offer_clipboard_credential(observation, attention)
+
+    # Separate: proactively offer for critical notifications
+    await _offer_notification_alert(observation, attention)
+
+    # Separate: proactively offer for system resource alerts
+    await _offer_system_resource_alert(observation, attention)
+
+    # Separate: proactively offer for window context switches
+    await _offer_context_switch(observation, attention)
+
     if judgement.disposition == "ignore":
         return
     if judgement.disposition == "log":
@@ -248,14 +393,293 @@ async def _handle_observation(payload: dict[str, Any]) -> None:
     aggregate = _state.gate.offer(judgement, summary)
     if aggregate is None:
         _state.suppressed += 1
+    else:
+        # Master switch gates delivery, not scoring: the counters in status()
+        # stay truthful (the engine sees everything), while a disabled engine
+        # never puts a suggestion in front of the user.
+        if not _enabled():
+            _state.suppressed += 1
+        else:
+            _propose(aggregate.judgement, aggregate.summary, suppressed=aggregate.suppressed)
+
+
+async def _offer_clipboard_credential(observation: Observation, attention: Attention) -> None:
+    """Proactively warn when a credential is copied to clipboard."""
+    if observation.kind != "clipboard.credential":
         return
-    # Master switch gates delivery, not scoring: the counters in status()
-    # stay truthful (the engine sees everything), while a disabled engine
-    # never puts a suggestion in front of the user.
+
+    # Respect attention
+    if attention.activity in ("watching", "call") or attention.speaking:
+        return
+
+    data = observation.data or {}
+    category = data.get("category", "credential")
+    length = data.get("length", 0)
+
+    from .scoring import Judgement, Score
+
+    clipboard_judgement = Judgement(
+        kind="clipboard.credential",
+        score=Score(
+            importance=0.8,
+            urgency=0.7,
+            confidence=0.95,
+            relevance=1.0 if attention.focus_topic.lower() in str(observation.data).lower() else 0.8,
+            actionability=0.6,
+        ),
+        disposition="notify",
+        reasons=(f"clipboard contains {category}", f"{length} characters"),
+        dedupe_key="clipboard.credential.offer",
+    )
+
+    aggregate = _state.clipboard_gate.offer(clipboard_judgement, f"Credential copied to clipboard — want me to secure it?")
+    if aggregate is None:
+        _state.suppressed += 1
+        return
+
     if not _enabled():
         _state.suppressed += 1
         return
-    _propose(aggregate.judgement, aggregate.summary, suppressed=aggregate.suppressed)
+
+    payload = {
+        "judgement": clipboard_judgement.to_dict(),
+        "summary": f"Credential copied to clipboard ({category}) — want me to secure it?",
+        "suppressed": aggregate.suppressed,
+        "action": {
+            "tool": "clipboard.secure",
+            "params": {"category": category},
+            "label": "Secure credential",
+        },
+    }
+
+    if _in_quiet_hours():
+        _state.held.append(payload)
+        del _state.held[:-HELD_LIMIT]
+        return
+
+    _deliver(payload)
+    _state.clipboard_offers += 1
+
+
+async def _offer_notification_alert(observation: Observation, attention: Attention) -> None:
+    """Proactively offer to handle critical notifications."""
+    if observation.kind != "system.notification":
+        return
+
+    data = observation.data or {}
+    urgency = data.get("urgency", "normal")
+
+    # Only act on critical/alert urgency notifications
+    if urgency not in ("critical", "alert"):
+        return
+
+    # Respect attention
+    if attention.activity in ("watching", "call") or attention.speaking:
+        return
+
+    app = data.get("app", "Unknown app")
+    summary = data.get("summary", "")
+
+    from .scoring import Judgement, Score
+
+    notification_judgement = Judgement(
+        kind="system.notification",
+        score=Score(
+            importance=0.7,
+            urgency=0.6,
+            confidence=0.9,
+            relevance=0.8,
+            actionability=0.5,
+        ),
+        disposition="notify",
+        reasons=(f"critical notification from {app}", summary[:100]),
+        dedupe_key="notification.alert.offer",
+    )
+
+    aggregate = _state.notification_gate.offer(notification_judgement, f"Critical alert from {app} — want me to summarize?")
+    if aggregate is None:
+        _state.suppressed += 1
+        return
+
+    if not _enabled():
+        _state.suppressed += 1
+        return
+
+    payload = {
+        "judgement": notification_judgement.to_dict(),
+        "summary": f"Critical alert from {app} — want me to summarize?",
+        "suppressed": aggregate.suppressed,
+        "action": {
+            "tool": "notifications.summarize",
+            "params": {"app": app, "summary": summary},
+            "label": "Summarize notification",
+        },
+    }
+
+    if _in_quiet_hours():
+        _state.held.append(payload)
+        del _state.held[:-HELD_LIMIT]
+        return
+
+    _deliver(payload)
+    _state.notification_offers += 1
+
+
+async def _offer_system_resource_alert(observation: Observation, attention: Attention) -> None:
+    """Proactively offer to investigate system resource issues."""
+    if not observation.kind.startswith("system."):
+        return
+
+    # Only for high-severity resource alerts
+    if observation.severity != "alert":
+        return
+
+    # Respect attention - but system alerts are important enough to sometimes interrupt
+    if attention.activity in ("call") or attention.speaking:
+        return
+
+    kind = observation.kind
+    data = observation.data or {}
+
+    from .scoring import Judgement, Score
+
+    # Determine action based on resource type
+    if kind == "system.cpu":
+        percent = data.get("percent", 0)
+        tool, params, label = "system.investigate_cpu", {"percent": percent}, "Investigate CPU"
+    elif kind == "system.memory":
+        percent = data.get("percent", 0)
+        tool, params, label = "system.investigate_memory", {"percent": percent}, "Investigate memory"
+    elif kind == "system.disk":
+        mountpoint = data.get("mountpoint", "/")
+        percent = data.get("percent", 0)
+        tool, params, label = "system.investigate_disk", {"mountpoint": mountpoint, "percent": percent}, "Investigate disk"
+    elif kind == "system.battery":
+        percent = data.get("percent", 0)
+        tool, params, label = "system.investigate_battery", {"percent": percent}, "Check battery"
+    elif kind == "system.network":
+        tool, params, label = "system.investigate_network", {"offline": True}, "Check network"
+    else:
+        return
+
+    system_judgement = Judgement(
+        kind=kind,
+        score=Score(
+            importance=0.75,
+            urgency=0.65,
+            confidence=0.9,
+            relevance=0.8,
+            actionability=0.7,
+        ),
+        disposition="notify",
+        reasons=(f"{kind} threshold exceeded", observation.summary[:100]),
+        dedupe_key=f"{kind}.offer",
+    )
+
+    aggregate = _state.system_gate.offer(system_judgement, f"System alert: {observation.summary} — want me to investigate?")
+    if aggregate is None:
+        _state.suppressed += 1
+        return
+
+    if not _enabled():
+        _state.suppressed += 1
+        return
+
+    payload = {
+        "judgement": system_judgement.to_dict(),
+        "summary": f"System alert: {observation.summary} — want me to investigate?",
+        "suppressed": aggregate.suppressed,
+        "action": {
+            "tool": tool,
+            "params": params,
+            "label": label,
+        },
+    }
+
+    if _in_quiet_hours():
+        _state.held.append(payload)
+        del _state.held[:-HELD_LIMIT]
+        return
+
+    _deliver(payload)
+    _state.system_offers += 1
+
+
+async def _offer_context_switch(observation: Observation, attention: Attention) -> None:
+    """Proactively offer context when user switches to a major application."""
+    if observation.kind != "window.focus":
+        return
+
+    data = observation.data or {}
+    to_app = (data.get("to") or {}).get("app", "")
+    from_app = (data.get("from") or {}).get("app", "")
+
+    # Only for significant switches (not rapid alt-tab)
+    if not to_app or to_app == from_app:
+        return
+
+    # Major application categories that warrant context
+    major_apps = {
+        "code", "code-oss", "vscode", "pycharm", "intellij", "webstorm",  # IDEs
+        "firefox", "chrome", "chromium", "brave", "edge",  # Browsers
+        "terminal", "gnome-terminal", "konsole", "alacritty", "kitty", "wezterm",  # Terminals
+        "slack", "discord", "teams", "zoom", "meet",  # Communication
+        "figma", "sketch", "xd",  # Design
+        "gitkraken", "sourcetree", "lazygit",  # Git
+        "docker", "podman", "k9s",  # DevOps
+    }
+
+    is_major = to_app.lower() in major_apps
+    if not is_major:
+        return
+
+    # Respect attention
+    if attention.activity in ("watching", "call") or attention.speaking:
+        return
+
+    from .scoring import Judgement, Score
+
+    context_judgement = Judgement(
+        kind="window.focus",
+        score=Score(
+            importance=0.4,
+            urgency=0.2,
+            confidence=0.8,
+            relevance=1.0 if attention.focus_topic.lower() in to_app.lower() else 0.7,
+            actionability=0.4,
+        ),
+        disposition="notify",
+        reasons=(f"switched to {to_app} from {from_app or 'nowhere'}", "major application context switch"),
+        dedupe_key="context.switch.offer",
+    )
+
+    aggregate = _state.context_gate.offer(context_judgement, f"Switched to {to_app} — want relevant context?")
+    if aggregate is None:
+        _state.suppressed += 1
+        return
+
+    if not _enabled():
+        _state.suppressed += 1
+        return
+
+    payload = {
+        "judgement": context_judgement.to_dict(),
+        "summary": f"Switched to {to_app} — want relevant context?",
+        "suppressed": aggregate.suppressed,
+        "action": {
+            "tool": "context.get",
+            "params": {"app": to_app, "previous": from_app},
+            "label": "Get context",
+        },
+    }
+
+    if _in_quiet_hours():
+        _state.held.append(payload)
+        del _state.held[:-HELD_LIMIT]
+        return
+
+    _deliver(payload)
+    _state.context_offers += 1
 
 
 async def _drain_held() -> None:
@@ -298,12 +722,23 @@ async def _subscriber() -> None:
     ``observation.<kind>``. The engine also listens to ``monitor`` events so a
     stopped monitor can be noticed, but attention state is never guessed from
     them -- no window/voice event exists yet, so nothing is inferred.
+
+    Also subscribes to attention events to feed the attention model:
+    - window.activity: focus/blur events
+    - voice.speaking: TTS/voice speaking state
+    - user.idle/active: idle detection
     """
-    agen = bus.subscribe(topics=("observation", "monitor"))
+    agen = bus.subscribe(topics=("observation", "monitor", "window", "voice", "user"))
     try:
         async for event in agen:
             if event.type.startswith("observation."):
                 await _handle_observation(event.payload)
+            elif event.type.startswith("window.activity"):
+                await _handle_window_activity(event.payload)
+            elif event.type.startswith("voice.speaking"):
+                await _handle_voice_speaking(event.payload)
+            elif event.type.startswith("user.idle") or event.type.startswith("user.active"):
+                await _handle_user_idle(event.payload)
             # monitor.* events are not observations and do not flow into
             # scoring; they are kept out of the engine deliberately. The
             # scoring rules for monitor.stopped exist for the ambient rows the
@@ -311,6 +746,25 @@ async def _subscriber() -> None:
     finally:
         with contextlib.suppress(Exception):
             await agen.aclose()
+
+
+async def _handle_window_activity(payload: dict[str, Any]) -> None:
+    """Update attention from window activity events."""
+    activity = payload.get("activity")
+    if activity in ("idle", "away", "typing", "reading", "coding", "watching", "call"):
+        _state.attention = _state.attention.replace(activity=activity)
+
+
+async def _handle_voice_speaking(payload: dict[str, Any]) -> None:
+    """Update attention from voice speaking events."""
+    speaking = payload.get("speaking", False)
+    _state.attention = _state.attention.replace(speaking=speaking)
+
+
+async def _handle_user_idle(payload: dict[str, Any]) -> None:
+    """Update attention from user idle/active events."""
+    idle = payload.get("idle", False)
+    _state.attention = _state.attention.replace(activity="away" if idle else "idle")
 
 
 async def _loop() -> None:
@@ -346,6 +800,43 @@ async def _loop() -> None:
             _state.consecutive_errors = 0
 
 
+async def _continuous_evaluation() -> None:
+    """Continuous ambient evaluation: synthesize across all observation sources.
+
+    Runs periodically to cross-correlate observations for higher-level insights
+    that single observations cannot provide.
+    """
+    while True:
+        try:
+            await asyncio.sleep(CONTINUOUS_EVAL_INTERVAL)
+        except asyncio.CancelledError:
+            raise
+        if not _enabled():
+            continue
+        try:
+            await _synthesize_ambient_context()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.exception("continuous evaluation failed")
+
+
+async def _synthesize_ambient_context() -> None:
+    """Cross-correlate ambient observations for higher-level proactive insights.
+
+    This is where Ultron-level intelligence emerges: combining screen, clipboard,
+    notifications, system, and window observations to detect patterns like:
+    - Error on screen + clipboard has error message -> offer to search fix
+    - High CPU + IDE focused -> offer to optimize build
+    - Notification from CI + browser on GitHub -> offer to open build log
+    - Battery low + presenting -> offer to enable power saving
+    """
+    # This is a placeholder for the synthesis logic
+    # In a full implementation, this would query recent ambient observations
+    # from the database and run pattern detection
+    pass
+
+
 # -------------------------------------------------------------- lifecycle API
 
 
@@ -361,15 +852,19 @@ def start() -> bool:
     _state.consecutive_errors = 0
     _state.task = asyncio.create_task(_loop(), name="proactive:engine")
     _state.subscriber = asyncio.create_task(_subscriber(), name="proactive:subscriber")
+    _state.continuous_task = asyncio.create_task(_continuous_evaluation(), name="proactive:continuous")
     return True
 
 
 async def stop() -> None:
     """Cancel the loop and the subscriber."""
-    tasks = (_state.task, _state.subscriber)
+    task_loop = _state.task
+    task_sub = _state.subscriber
+    task_cont = _state.continuous_task
     _state.task = None
     _state.subscriber = None
-    for task in tasks:
+    _state.continuous_task = None
+    for task in (task_loop, task_sub, task_cont):
         if task is None or task.done():
             continue
         task.cancel()
@@ -380,7 +875,8 @@ async def stop() -> None:
 def running() -> bool:
     loop_alive = _state.task is not None and not _state.task.done()
     sub_alive = _state.subscriber is not None and not _state.subscriber.done()
-    return loop_alive and sub_alive
+    cont_alive = _state.continuous_task is not None and not _state.continuous_task.done()
+    return loop_alive and sub_alive and cont_alive
 
 
 def status() -> dict[str, Any]:
@@ -401,6 +897,11 @@ def status() -> dict[str, Any]:
         "suppressed": _state.suppressed,
         "held": len(_state.held),
         "released_from_hold": _state.released_from_hold,
+        "screen_offers": _state.screen_offers,
+        "clipboard_offers": _state.clipboard_offers,
+        "notification_offers": _state.notification_offers,
+        "system_offers": _state.system_offers,
+        "context_offers": _state.context_offers,
         "last": _state.last,
         "stopped_reason": _state.stopped_reason,
     }

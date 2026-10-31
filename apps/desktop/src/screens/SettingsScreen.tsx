@@ -55,7 +55,7 @@ import { api, type RetentionReport } from "../lib/api";
 import { useAction, useAsync } from "../lib/useAsync";
 import { PENDING_SCREENS } from "../state/screens";
 
-type TabValue = "behaviour" | "voice" | "memory" | "machine" | "data" | "gaps";
+type TabValue = "behaviour" | "voice" | "memory" | "machine" | "data" | "gaps" | "personality";
 
 const TABS: Array<{ value: TabValue; label: string }> = [
   { value: "behaviour", label: "How it answers" },
@@ -64,6 +64,7 @@ const TABS: Array<{ value: TabValue; label: string }> = [
   { value: "machine", label: "This machine" },
   { value: "data", label: "Data on disk" },
   { value: "gaps", label: "Stored but inert" },
+  { value: "personality", label: "Personality" },
 ];
 
 /**
@@ -156,15 +157,58 @@ const VOICE: Row[] = [
     key: "input_language",
     label: "Language you speak",
     help:
-      "Handed to the transcription model rather than left for it to guess, because a wrong guess transliterates instead of transcribing. An ISO code such as en, fr, hi - passed through untouched. Empty leaves the model to detect it.",
+      "Handed to the transcription model rather than left for it to guess, because a wrong guess transliterates instead of transcribing. NVIDIA Parakeet accepts arbitrary BCP-47 codes. Mistral Voxtral uses its own set. Empty leaves the model to detect it.",
     reads: "api/routes/voice_routes.py - transcribe()",
-    control: { kind: "text", placeholder: "en", maxLength: 12 },
+    control: {
+      kind: "choice",
+      options: [
+        { value: "", label: "Auto-detect" },
+        { value: "en", label: "English" },
+        { value: "hi", label: "Hindi (hi)" },
+        { value: "hi-IN", label: "Hindi - India (hi-IN)" },
+        { value: "es", label: "Spanish (es)" },
+        { value: "fr", label: "French (fr)" },
+        { value: "de", label: "German (de)" },
+        { value: "zh", label: "Chinese (zh)" },
+        { value: "ja", label: "Japanese (ja)" },
+        { value: "ko", label: "Korean (ko)" },
+        { value: "pt", label: "Portuguese (pt)" },
+        { value: "ar", label: "Arabic (ar)" },
+        { value: "it", label: "Italian (it)" },
+        { value: "vi", label: "Vietnamese (vi)" },
+      ],
+    },
+  },
+  {
+    key: "output_language",
+    label: "Language NEXUS speaks in",
+    help:
+      "Handed to the synthesis model rather than left for it to guess, because a wrong guess synthesises in the wrong language. NVIDIA Magpie TTS supports 12 languages. Mistral Voxtral voice carries language. Empty leaves the model to use its default.",
+    reads: "api/routes/voice_routes.py - speak()",
+    control: {
+      kind: "choice",
+      options: [
+        { value: "", label: "Provider default" },
+        { value: "en-US", label: "English - US (en-US)" },
+        { value: "hi-IN", label: "Hindi - India (hi-IN)" },
+        { value: "es-US", label: "Spanish - US (es-US)" },
+        { value: "fr-FR", label: "French - France (fr-FR)" },
+        { value: "de-DE", label: "German - Germany (de-DE)" },
+        { value: "zh-CN", label: "Chinese - China (zh-CN)" },
+        { value: "ja-JP", label: "Japanese - Japan (ja-JP)" },
+        { value: "ko-KR", label: "Korean - Korea (ko-KR)" },
+        { value: "pt-BR", label: "Portuguese - Brazil (pt-BR)" },
+        { value: "ar-AR", label: "Arabic - Arabic (ar-AR)" },
+        { value: "it-IT", label: "Italian - Italy (it-IT)" },
+        { value: "vi-VN", label: "Vietnamese - Vietnam (vi-VN)" },
+      ],
+    },
   },
   {
     key: "tts_voice",
     label: "Voice used for speech",
     help:
-      "The provider's voice name, used whenever a caller does not name one. Empty means the provider default (en_paul_neutral). VOICE lists what a synthesis actually came back as, so a name that does not exist is visible rather than silently substituted.",
+      "The provider's voice name, used whenever a caller does not name one. Empty means the provider default (en_paul_neutral for Mistral, Magpie-Multilingual for NVIDIA). VOICE lists what a synthesis actually came back as, so a name that does not exist is visible rather than silently substituted.",
     reads: "api/routes/voice_routes.py - speak()",
     control: { kind: "text", placeholder: "en_paul_neutral", maxLength: 60 },
   },
@@ -177,6 +221,14 @@ const MEMORY: Row[] = [
     help:
       "The master switch. With this off the permission engine refuses every memory.* capability outright, so NEXUS cannot recall or remember even if it tries.",
     reads: "permissions/engine.py - _disabled_reason(), and ai/context.py",
+    control: { kind: "toggle" },
+  },
+  {
+    key: "learning_enabled",
+    label: "Continuous learning",
+    help:
+      "Whether NEXUS observes your corrections, repeated choices, and stated facts to adapt without being retrained. The processor runs on a timer and checks this setting on every tick. Learned records are visible in the Memory panel and can be deleted at any time.",
+    reads: "tools/learning.py - LearningProcessor._loop()",
     control: { kind: "toggle" },
   },
   {
@@ -277,6 +329,59 @@ const MACHINE: Row[] = [
   },
 ];
 
+const PERSONALITY: Row[] = [
+  {
+    key: "personality_active_id",
+    label: "Active personality",
+    help:
+      "Which persona NEXUS speaks as. Each has distinct vocabulary, formality, and mannerisms. JARVIS is formal and precise. FRIDAY is casual and efficient. ULTRON is cold and logical. EDITH is tactical and secure. CORTANNA is warm and helpful. Custom lets you build your own.",
+    reads: "lib/personality.ts - PERSONALITIES registry, usePersonality hook",
+    control: {
+      kind: "choice",
+      options: [
+        { value: "jarvis", label: "JARVIS - Formal, precise, British butler" },
+        { value: "friday", label: "FRIDAY - Casual, efficient, modern" },
+        { value: "ultron", label: "ULTRON - Cold, logical, superior" },
+        { value: "edith", label: "EDITH - Tactical, secure, mission-focused" },
+        { value: "cortanna", label: "CORTANNA - Warm, helpful, conversational" },
+        { value: "custom", label: "Custom - Build your own" },
+      ],
+    },
+  },
+  {
+    key: "personality_tts_enabled",
+    label: "Speak personality lines aloud",
+    help:
+      "When on, greetings, status murmurs, time announcements, and proactive suggestions are spoken via TTS. When off, they only appear visually in the history. The proactive toast and ambient alerts respect this setting.",
+    reads: "lib/personality.ts - usePersonality hook, speak() function",
+    control: { kind: "toggle" },
+  },
+  {
+    key: "personality_murmur_interval_ms",
+    label: "Murmur interval",
+    help:
+      "How often NEXUS speaks a contextual status murmur during idle periods. Shorter intervals feel more present; longer intervals are less intrusive. Minimum 30 seconds. Set to 0 to disable murmurs entirely.",
+    reads: "lib/personality.ts - usePersonality murmur timer",
+    control: { kind: "number", min: 0, max: 3600000, unit: "milliseconds" },
+  },
+  {
+    key: "personality_time_announce_enabled",
+    label: "Announce the time periodically",
+    help:
+      "When on, NEXUS announces the time at the configured interval. Uses the personality's time announcement vocabulary and markers.",
+    reads: "lib/personality.ts - usePersonality timeTimer",
+    control: { kind: "toggle" },
+  },
+  {
+    key: "personality_time_announce_interval_ms",
+    label: "Time announcement interval",
+    help:
+      "How often to announce the time. Default is hourly. Minimum 5 minutes.",
+    reads: "lib/personality.ts - usePersonality timeTimer",
+    control: { kind: "number", min: 300000, max: 86400000, unit: "milliseconds" },
+  },
+];
+
 const RETENTION: Row[] = [
   {
     key: "retain_activity_days",
@@ -326,7 +431,7 @@ const INERT: Array<{ keys: string[]; waiting: string }> = [
   },
   {
     keys: ["proactive_suggestions_enabled", "proactive_quiet_hours"],
-    waiting: "Proactive suggestions. Nothing generates one, so quiet hours would silence silence.",
+    waiting: "Proactive suggestions. Screen changes offer to describe what's on screen; quiet hours hold and release later.",
   },
   {
     keys: ["diagnostics_verbose"],
@@ -357,6 +462,12 @@ const ELSEWHERE: Array<{ label: string; keys: string; where: string }> = [
     keys: "main_model, model_*, router_mode, allow_fallback, pinned_*",
     where:
       "MODELS, which can show the chain a pin displaces and call the real resolver to prove it. One key written from two screens is how two screens come to disagree.",
+  },
+  {
+    label: "Personality",
+    keys: "personality_*",
+    where:
+      "PERSONALITY tab. All personality keys are managed here - the custom personality definition is edited via the Personality screen component (not yet built), and the active ID switches the live persona.",
   },
 ];
 
@@ -428,7 +539,9 @@ export function SettingsScreen() {
           ? MEMORY
           : tab === "machine"
             ? MACHINE
-            : [];
+            : tab === "personality"
+              ? PERSONALITY
+              : [];
 
   return (
     <div className="flex h-full min-h-0 flex-col p-2">
@@ -492,6 +605,7 @@ export function SettingsScreen() {
             </>
           )}
           {tab === "gaps" && <Gaps orphans={load.data.orphans} settings={settings} />}
+          {tab === "personality" && <PersonalitySettings />}
         </div>
       </Panel>
     </div>
@@ -1028,5 +1142,152 @@ function Gaps({
         )}
       </Section>
     </>
+  );
+}
+
+/**
+ * Personality configuration panel.
+ *
+ * Shows the active personality, lets the user switch, and displays the current
+ * configuration. The custom personality editor is not yet built - selecting
+ * "custom" activates the built-in custom preset which can be configured via
+ * the raw JSON setting.
+ */
+function PersonalitySettings() {
+  const { accent } = useAccent();
+  return (
+    <Section title="Personality Settings" meta="how NEXUS speaks and behaves">
+      <div className="space-y-4 p-3">
+        <div className="chamfer border border-line bg-base p-3">
+          <div className="flex items-center gap-3 mb-3">
+            <div
+              className="w-8 h-8 rounded-full flex items-center justify-center font-mono text-[10px] uppercase tracking-wider text-ink"
+              style={{ background: `var(--accent)`, color: "var(--accent-ink)" }}
+            >
+              AI
+            </div>
+            <div>
+              <p className="label">NEXUS Personality</p>
+              <p className="font-mono text-[10px] text-ink-dim">
+                Choose how NEXUS presents itself - vocabulary, formality, verbosity, and tone
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-2 text-[11px] leading-relaxed text-ink-dim">
+            <p>
+              <span className="text-ink-faint">Active:</span> The personality setting controls every spoken
+              line, proactive suggestion framing, ambient murmur, and visual indicator style.
+              Switching takes effect immediately - greetings, status reports, and time
+              announcements all use the new voice.
+            </p>
+            <p>
+              <span className="text-ink-faint">Murmurs:</span> Periodic status updates during idle time
+              ("Systems nominal", "Monitoring"). Interval configurable above. Disabled during
+              high-load or focus contexts.
+            </p>
+            <p>
+              <span className="text-ink-faint">Time announcements:</span> Periodic time announcements
+              ("The time is 3:45 PM"). Optional, off by default.
+            </p>
+            <p>
+              <span className="text-ink-faint">TTS:</span> When enabled, all personality lines are spoken
+              aloud via the configured TTS voice. When disabled, they appear only in the visual
+              history and proactive toasts.
+            </p>
+          </div>
+        </div>
+
+        <div className="chamfer border border-line bg-base p-3">
+          <p className="label mb-2">Personality Comparison</p>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {[
+              { id: "jarvis", name: "JARVIS", style: "Formal, precise, British butler", color: "#22d3ee" },
+              { id: "friday", name: "FRIDAY", style: "Casual, efficient, modern", color: "#38bdf8" },
+              { id: "ultron", name: "ULTRON", style: "Cold, logical, superior", color: "#ff3b4e" },
+              { id: "edith", name: "EDITH", style: "Tactical, secure, mission-focused", color: "#10b981" },
+              { id: "cortanna", name: "CORTANNA", style: "Warm, helpful, conversational", color: "#a78bfa" },
+            ].map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className={[
+                  "chamfer-sm border p-3 text-left transition-colors",
+                  "border-line-bright hover:border-accent/40 hover:bg-raised",
+                ].join(" ")}
+                style={{ borderLeft: `3px solid ${p.color}` }}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="w-2.5 h-2.5 rounded-full" style={{ background: p.color }} />
+                  <span className="label">{p.name}</span>
+                </div>
+                <p className="font-mono text-[10px] text-ink-dim">{p.style}</p>
+              </button>
+            ))}
+            <button
+              type="button"
+              className={[
+                "chamfer-sm border p-3 text-left transition-colors",
+                "border-line-bright hover:border-accent/40 hover:bg-raised",
+              ].join(" ")}
+              style={{ borderLeft: `3px solid ${accent}` }}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <div className="w-2.5 h-2.5 rounded-full bg-gradient-to-r from-cyan-400 to-violet-400" />
+                <span className="label">CUSTOM</span>
+              </div>
+              <p className="font-mono text-[10px] text-ink-dim">Build your own vocabulary, markers, and style</p>
+            </button>
+          </div>
+        </div>
+
+        <div className="chamfer border border-line bg-base p-3">
+          <p className="label mb-2">Visual Indicator Preview</p>
+          <p className="font-mono text-[10px] text-ink-dim mb-3">
+            The listening indicator style varies by personality:
+          </p>
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[10px] text-ink-dim">Pulse:</span>
+              <div className="w-8 h-8 rounded-full animate-pulse" style={{ background: "var(--accent)", boxShadow: "0 0 12px var(--accent)" }} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[10px] text-ink-dim">Wave:</span>
+              <div className="flex gap-1" style={{ color: "var(--accent)" }}>
+                {[0, 1, 2, 3].map((i) => (
+                  <div
+                    key={i}
+                    className="w-1.5 h-8 rounded-full animate-pulse"
+                    style={{ animationDelay: `${i * 100}ms`, opacity: 0.6 }}
+                  />
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[10px] text-ink-dim">Orb:</span>
+              <div className="w-8 h-8 rounded-full animate-orb-float" style={{
+                background: "radial-gradient(circle at 30% 30%, var(--accent)DD, var(--accent)44 70%)",
+                boxShadow: "0 0 24px var(--accent)88, inset 0 -4px 8px var(--accent)44",
+              }} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[10px] text-ink-dim">Bars:</span>
+              <div className="flex items-end gap-1 h-8" style={{ color: "var(--accent)" }}>
+                {[0, 1, 2, 3, 4].map((i) => (
+                  <div
+                    key={i}
+                    className="w-1.5 rounded-full animate-bar-dance"
+                    style={{
+                      height: `${20 + i * 16}%`,
+                      animationDelay: `${i * 100}ms`,
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Section>
   );
 }

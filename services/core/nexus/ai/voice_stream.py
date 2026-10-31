@@ -48,8 +48,10 @@ from ..logging_setup import get_logger
 from ..providers import speech as speech_provider
 from ..providers.base import ProviderError
 from ..router import NoModelAvailable, resolve as resolve_job
+from ..tools.language_detect import detect_language_from_text, get_tts_language
 from . import speech_stream
 from .core import ai_core
+from ..core.events import bus
 
 log = get_logger("ai.voice_stream")
 
@@ -112,7 +114,7 @@ def _tts_model() -> tuple[Any | None, str]:
         return None, str(exc)
 
 
-def _voice(requested: str | None, provider_id: str) -> str | None:
+def _voice(requested: str | None, provider_id: str, text: str = "") -> str | None:
     """The caller's voice, else the ``tts_voice`` setting, else the provider's own.
 
     In that order, so choosing a voice in Settings actually changes what is heard --
@@ -132,12 +134,28 @@ def _voice(requested: str | None, provider_id: str) -> str | None:
     )
 
 
+def _tts_language(text: str, requested: str | None = None) -> str | None:
+    """Get the TTS language, auto-detecting from text if not provided."""
+    language = requested
+    if not language:
+        # Try output_language setting
+        language = str(app_settings.get("output_language", "") or "").strip()
+    if not language and text:
+        # Auto-detect from text
+        language = detect_language_from_text(text)
+    # Convert to best TTS language
+    if language:
+        language = get_tts_language(language)
+    return language
+
+
 async def synthesize_one(
     text: str,
     *,
     provider_id: str,
     model: str,
     voice: str | None,
+    language: str | None,
 ) -> tuple[str | None, str | None]:
     """One synthesis call. Returns ``(path, error)`` -- never raises.
 
@@ -150,7 +168,7 @@ async def synthesize_one(
     """
     try:
         speech = await speech_provider.synthesize(
-            text, provider_id=provider_id, model=model, voice=voice
+            text, provider_id=provider_id, model=model, voice=voice, language=language
         )
     except ProviderError as exc:
         return None, str(exc)
@@ -168,6 +186,7 @@ async def _synthesiser(
     provider_id: str,
     model: str,
     voice: str | None,
+    language: str | None,
 ) -> None:
     """Drain segments, synthesise them one at a time, put results on ``out`` in order.
 
@@ -185,7 +204,7 @@ async def _synthesiser(
                 return
             index, segment = item
             path, error = await synthesize_one(
-                segment.spoken, provider_id=provider_id, model=model, voice=voice
+                segment.spoken, provider_id=provider_id, model=model, voice=voice, language=language
             )
             name = Path(path).name if path else ""
             await out.put(
@@ -222,6 +241,7 @@ async def stream(
     voice: str | None = None,
     speak: bool = True,
     mode: str | None = None,
+    forced_model: str | None = None,  # Direct model key to bypass router
     stop_speaking: "asyncio.Event | None" = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """One turn, yielding the model's events and audio for each sentence as it lands.
@@ -253,8 +273,10 @@ async def stream(
     decision, reason = _tts_model() if speak else (None, "")
     # The voice is resolved against the routed provider, so a stored preference from
     # the other one is dropped here rather than sent and refused per segment.
+    # Get TTS language (auto-detect from request text if not specified)
+    tts_language = _tts_language(request, voice) if speak and decision is not None else None
     chosen = (
-        _voice(voice, decision.provider_id) if speak and decision is not None else None
+        _voice(voice, decision.provider_id, request) if speak and decision is not None else None
     )
 
     if speak and decision is None:
@@ -283,7 +305,9 @@ async def stream(
     results: asyncio.Queue[Any] = asyncio.Queue()
     worker: asyncio.Task[None] | None = None
     if live:
-        yield {"type": "voice", "routed": decision.key, "model": decision.model_id, "voice": chosen}
+        # Publish voice.speaking start event for attention model
+        await bus.publish("voice.speaking", {"speaking": True})
+        yield {"type": "voice", "routed": decision.key, "model": decision.model_id, "voice": chosen, "language": tts_language}
         worker = asyncio.create_task(
             _synthesiser(
                 inbox,
@@ -291,6 +315,7 @@ async def stream(
                 provider_id=decision.provider_id,
                 model=decision.model_id,
                 voice=chosen,
+                language=tts_language,
             )
         )
 
@@ -428,3 +453,6 @@ async def stream(
             worker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await worker
+        # Publish voice.speaking end event for attention model
+        if live:
+            await bus.publish("voice.speaking", {"speaking": False})

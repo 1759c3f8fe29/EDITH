@@ -403,6 +403,18 @@ class Router:
                 return "No Mistral API key is configured, so voice is unavailable."
             return None
 
+        if candidate.provider_id == "groq":
+            # Groq serves speech over its own OpenAI-shaped HTTP API, with the same
+            # key as its chat models. Checked before the NIM catalogue because
+            # Groq's speech models are deliberately absent from it: that catalogue
+            # describes NVIDIA's wire, and adding a foreign provider's model to it
+            # would make "in the NIM catalogue" stop meaning anything.
+            if not providers.groq_audio.serves(job_spec.job):
+                return f"Groq audio does not do {job_spec.job}."
+            if not providers.groq_audio.has_credential():
+                return "No Groq API key is configured, so voice is unavailable."
+            return None
+
         endpoint = providers.nim_catalogue.BY_MODEL.get(candidate.model_id)
         if endpoint is None:
             return f"{candidate.model_id} is not in the NIM specialist catalogue."

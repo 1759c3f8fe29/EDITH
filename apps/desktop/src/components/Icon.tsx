@@ -63,7 +63,11 @@ export type IconName =
   | "volume"
   | "spinner"
   | "verified"
-  | "unverified";
+  | "unverified"
+  | "monitor"
+  | "monitor-off"
+  | "sparkles"
+  | "eye";
 
 /** Stroked paths, drawn on a 24x24 box. `fill` is never used — one visual language. */
 const PATHS: Record<IconName, string> = {
@@ -115,6 +119,14 @@ const PATHS: Record<IconName, string> = {
   spinner: "M12 3a9 9 0 0 1 9 9",
   verified: "M12 3l7 3v6c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6l7-3Zm-3 8.5 2.5 2.5L16 9.5",
   unverified: "M12 3l7 3v6c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6l7-3ZM9.5 9.5l5 5m0-5-5 5",
+  // A screen with a stand
+  monitor: "M4 3h16a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm0 2v13h16V5H4ZM9 20h6v2H9v-2Z",
+  // Screen with slash
+  "monitor-off": "M4 3h16a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm0 2v13h16V5H4ZM9 20h6v2H9v-2ZM2 2l20 20",
+  // Sparkles for proactive AI
+  sparkles: "M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z",
+  // Eye icon
+  eye: "M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12S18 17.5 12 17.5 2.5 12 2.5 12Zm9.5 2.6a2.6 2.6 0 1 0 0-5.2 2.6 2.6 0 0 0 0 5.2Z",
 };
 
 export type IconProps = {

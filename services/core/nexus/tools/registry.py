@@ -110,6 +110,17 @@ class Tool:
     read_only: bool = False
     aliases: tuple[str, ...] = field(default_factory=tuple)
 
+    #: Voice announcement when this tool starts executing.
+    #: If not provided, a default is generated from the tool's title.
+    #: Can include {param_name} placeholders that are filled from cleaned params.
+    voice_start: str | None = None
+    #: Voice announcement when this tool times out (optional).
+    #: If not provided, a default is generated from the tool's title.
+    voice_timeout: str | None = None
+    #: Voice announcement when this tool fails with an error (optional).
+    #: If not provided, a default is generated from the tool's title.
+    voice_error: str | None = None
+
     @property
     def risk(self) -> str:
         return capabilities.get(self.capability).risk
@@ -236,6 +247,9 @@ def tool(
     idempotent: bool = True,
     read_only: bool = False,
     aliases: Iterable[str] = (),
+    voice_start: str | None = None,
+    voice_timeout: str | None = None,
+    voice_error: str | None = None,
 ) -> Callable[[Handler], Handler]:
     """Decorator form: keeps a tool's declaration next to its implementation."""
 
@@ -255,6 +269,9 @@ def tool(
                 idempotent=idempotent,
                 read_only=read_only,
                 aliases=tuple(aliases),
+                voice_start=voice_start,
+                voice_timeout=voice_timeout,
+                voice_error=voice_error,
             )
         )
         return handler

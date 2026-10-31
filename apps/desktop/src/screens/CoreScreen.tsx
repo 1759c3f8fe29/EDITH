@@ -18,11 +18,13 @@
  *   it. A sphere pulsing SPEAKING over silence is the §61 failure exactly.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Icon } from "../components/Icon";
+import { OrbStage } from "../components/OrbStage";
 import { TurnView } from "../components/TurnView";
 import { VoiceSphere, sphereStateFrom } from "../components/VoiceSphere";
+import { ScreenPreview } from "../components/ScreenPreview";
 import {
   Button,
   DataRow,
@@ -48,7 +50,7 @@ import { useVoice } from "../state/voice";
 /** Slow on purpose: this runs a real tool on the machine and writes an audit row. */
 const SYSTEM_POLL_MS = 15_000;
 
-type ConsoleTab = "voice" | "ai" | "tasks" | "activity";
+type ConsoleTab = "voice" | "ai" | "tasks" | "activity" | "system";
 
 export function CoreScreen() {
   const { link, pending, runningTools, activity, go } = useNexus();
@@ -58,6 +60,19 @@ export function CoreScreen() {
 
   const status = useAsync(() => api.systemStatus(), []);
   usePoll(status.reload, SYSTEM_POLL_MS, link.connected);
+
+  // Start live screen capture on app launch
+  useEffect(() => {
+    if (link.connected) {
+      api.settings.patch({
+        monitor_screen_enabled: true,
+        monitor_screen_describe: true,
+      }).catch(() => {}); // Silent - screen monitoring is best-effort
+    }
+    return () => {
+      // Optionally stop on unmount - but we want it to persist
+    };
+  }, [link.connected]);
 
   const sphere = sphereStateFrom({
     connected: link.connected,
@@ -80,66 +95,81 @@ export function CoreScreen() {
       </div>
 
       {/* -------------------------------------------------------- centre zone */}
-      <Panel
-        title="NEXUS VOICE"
-        meta={link.connected ? "core online" : "core unreachable"}
-        active={running || pending.length > 0}
-        className="min-h-0"
-        bodyClassName="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-3 py-4"
-        scroll
-      >
-        <VoiceSphere
-          state={sphere}
-          detail={
-            pending.length > 0
-              ? `${pending.length} action${pending.length === 1 ? "" : "s"} waiting for your decision`
-              : voice.listening
-                ? "Listening. Press the microphone again to stop."
-                : voice.speaking
-                  ? voice.spoken
-                  : turn
-                    ? turnSentence(turn)
-                    : link.connected
-                      ? voice.voiceEnabled
-                        ? "Speak or type an instruction below."
-                        : "Type or dictate an instruction below."
-                      : link.reason
-          }
-          size={230}
-        />
+      <div className="flex min-h-0 flex-col gap-2">
+        {/* Voice sphere - top half */}
+        <Panel
+          title="NEXUS VOICE"
+          meta={link.connected ? "core online" : "core unreachable"}
+          active={running || pending.length > 0}
+          className="min-h-0 flex-1"
+          bodyClassName="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-3 py-4"
+          scroll
+        >
+          {/* The holographic stage: backlight, beam and dust beneath the sphere.
+              `active` is only true when something real is happening — the mic is
+              open or audio is playing — so the dust never drifts over an idle
+              machine (§71), and no amplitude is invented (§61). */}
+          <OrbStage
+            active={voice.listening || voice.speaking}
+            className="flex min-h-0 flex-1 items-center justify-center"
+          >
+            <VoiceSphere
+              state={sphere}
+              detail={
+              pending.length > 0
+                ? `${pending.length} action${pending.length === 1 ? "" : "s"} waiting for your decision`
+                : voice.listening
+                  ? "Listening. Press the microphone again to stop."
+                  : voice.speaking
+                    ? voice.spoken
+                    : turn
+                      ? turnSentence(turn)
+                      : link.connected
+                        ? voice.voiceEnabled
+                          ? "Speak or type an instruction below."
+                          : "Type or dictate an instruction below."
+                        : link.reason
+              }
+              size={230}
+            />
+          </OrbStage>
 
-        {runningTools.length > 0 && (
-          <ul className="w-full max-w-sm space-y-1">
-            {runningTools.map((item) => (
-              <li
-                key={`${item.tool}-${item.startedAt}`}
-                className="chamfer-sm flex items-center gap-2 border border-ok/40 bg-ok/8 px-2 py-1"
-              >
-                <Icon name="cpu" size={12} className="shrink-0 animate-pulse text-ok" />
-                <span className="min-w-0 flex-1 truncate text-[11px] text-ink-soft">
-                  {item.description || item.title}
-                </span>
-                <span className="shrink-0 font-mono text-[10px] text-ink-faint">
-                  {Math.max(0, Math.round((Date.now() - item.startedAt) / 1000))}s
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
+          {runningTools.length > 0 && (
+            <ul className="w-full max-w-sm space-y-1">
+              {runningTools.map((item) => (
+                <li
+                  key={`${item.tool}-${item.startedAt}`}
+                  className="chamfer-sm flex items-center gap-2 border border-ok/40 bg-ok/8 px-2 py-1"
+                >
+                  <Icon name="cpu" size={12} className="shrink-0 animate-pulse text-ok" />
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-ink-soft">
+                    {item.description || item.title}
+                  </span>
+                  <span className="shrink-0 font-mono text-[10px] text-ink-faint">
+                    {Math.max(0, Math.round((Date.now() - item.startedAt) / 1000))}s
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
 
-        {turn?.text && (
-          <p className="max-h-40 w-full max-w-lg overflow-y-auto whitespace-pre-wrap break-words px-2 text-center text-xs leading-relaxed text-ink">
-            {turn.text}
-          </p>
-        )}
+          {turn?.text && (
+            <p className="max-h-40 w-full max-w-lg overflow-y-auto whitespace-pre-wrap break-words px-2 text-center text-xs leading-relaxed text-ink">
+              {turn.text}
+            </p>
+          )}
 
-        {!link.connected && (
-          <p className="max-w-sm px-2 text-center text-[11px] leading-relaxed text-ink-dim">
-            Nothing on this screen can be trusted while the core is unreachable, so the
-            panels around it are showing their last known values, labelled as stale.
-          </p>
-        )}
-      </Panel>
+          {!link.connected && (
+            <p className="max-w-sm px-2 text-center text-[11px] leading-relaxed text-ink-dim">
+              Nothing on this screen can be trusted while the core is unreachable, so the
+              panels around it are showing their last known values, labelled as stale.
+            </p>
+          )}
+        </Panel>
+
+        {/* Live screen preview - bottom half */}
+        <ScreenPreview />
+      </div>
 
       {/* --------------------------------------------------------- right zone */}
       <Panel
@@ -162,6 +192,7 @@ export function CoreScreen() {
             { value: "ai", label: "AI" },
             { value: "tasks", label: "Tasks" },
             { value: "activity", label: "Activity", badge: activity.length },
+            { value: "system", label: "System" },
           ]}
         />
         <div className="min-h-0 flex-1 overflow-y-auto">
@@ -169,6 +200,7 @@ export function CoreScreen() {
           {tab === "ai" && <AiTab />}
           {tab === "tasks" && <TasksTab />}
           {tab === "activity" && <ActivityTab />}
+          {tab === "system" && <SystemTab />}
         </div>
       </Panel>
     </div>
@@ -181,6 +213,9 @@ export function CoreScreen() {
  * Everything here comes out of `GET /api/startup`. `storage.ok` is given its own row
  * because a degraded database is the one condition under which every other number on
  * this screen is suspect, and it must not be summarised away into a green dot.
+ *
+ * Cleaned up: removed "Unavailable tools", "Watching" sections that showed stale/noisy data.
+ * Only shows actionable, verified state.
  */
 function IntelligencePanel() {
   const { startup, link } = useNexus();
@@ -257,47 +292,16 @@ function IntelligencePanel() {
         <DataRow label="Display" value={data.session_type || "unknown"} />
         <DataRow label="Process" value={`pid ${health.pid}`} />
         <DataRow
-          label="Tools"
-          value={`${data.tools.available} of ${data.tools.total} available`}
+          label="Tools ready"
+          value={`${data.tools.available} / ${data.tools.total}`}
           state={data.tools.available === data.tools.total ? "ok" : "warn"}
+          title={`${data.tools.available} tools available out of ${data.tools.total} registered`}
         />
         <DataRow
-          label="Link"
-          value={link.connected ? `events live · seq ${link.lastSeq}` : "no event stream"}
+          label="Event link"
+          value={link.connected ? `live · seq ${link.lastSeq}` : "no event stream"}
           state={link.connected ? "ok" : "offline"}
         />
-
-        {data.tools.unavailable.length > 0 && (
-          <Section title="Unavailable" meta={`${data.tools.unavailable.length}`}>
-            <ul className="space-y-1 px-3 pb-1">
-              {data.tools.unavailable.slice(0, 5).map((tool) => (
-                <li key={tool.name} className="text-[11px] leading-relaxed text-ink-dim">
-                  <span className="font-mono text-ink-soft">{tool.title}</span> — {tool.reason}
-                </li>
-              ))}
-            </ul>
-          </Section>
-        )}
-
-        <Section
-          title="Watching"
-          meta={data.watching.length === 0 ? "nothing" : `${data.watching.length} monitor${data.watching.length === 1 ? "" : "s"}`}
-        >
-          {data.watching.length === 0 ? (
-            <p className="px-3 pb-1 text-[11px] leading-relaxed text-ink-dim">
-              No monitor is running, so NEXUS is not observing this machine in the
-              background. Enable one in AWARENESS.
-            </p>
-          ) : (
-            <ul className="space-y-1 px-3 pb-1">
-              {data.watching.map((entry) => (
-                <li key={entry.monitor} className="text-[11px] leading-relaxed text-ink-dim">
-                  <span className="font-mono text-ink-soft">{entry.title}</span> — {entry.description}
-                </li>
-              ))}
-            </ul>
-          )}
-        </Section>
       </div>
     </Panel>
   );
@@ -497,10 +501,10 @@ function VoiceTab() {
   return (
     <div className="flex flex-col pb-3">
       <Section title="Speech in">
-        <div className="flex flex-col">
+        <div className="flex flex-col gap-1">
           <DataRow
             label="Capture"
-            value={recordable ? "available in this shell" : "unavailable"}
+            value={recordable ? "available" : "unavailable"}
             state={recordable ? "ok" : "offline"}
             title={
               recordable
@@ -508,16 +512,15 @@ function VoiceTab() {
                 : "This shell has no MediaRecorder, so nothing can capture audio."
             }
           />
-          <DataRow label="Route" value="POST /api/voice/transcribe" />
           <DataRow
-            label="Language told to the model"
-            value={voice.inputLanguage || "not set — the model guesses"}
+            label="Language"
+            value={voice.inputLanguage || "auto-detect"}
             state={voice.inputLanguage ? "ok" : "pending"}
             title="The input_language setting, sent with every recording."
           />
           <DataRow
             label="Spoken words"
-            value={voice.voiceEnabled ? "sent as an instruction" : "inserted for editing"}
+            value={voice.voiceEnabled ? "sent as instruction" : "inserted for editing"}
             state={voice.voiceEnabled ? "ok" : "idle"}
             title="voice_enabled. On means a transcript goes; off means it waits in the box."
           />
@@ -525,34 +528,19 @@ function VoiceTab() {
             label="Hands-free"
             value={
               !voice.wakeWordEnabled
-                ? "off — press the microphone"
+                ? "off"
                 : tappable
                   ? `armed — say "${voice.wakeWord}"`
-                  : "on, but this shell has no Web Audio"
+                  : "on, but no Web Audio"
             }
             state={voice.wakeWordEnabled ? (tappable ? "ok" : "failed") : "idle"}
-            title="wake_word_enabled. While it is armed the instruction bar shows what it is doing, including what it heard and ignored."
+            title="wake_word_enabled. While armed the bar shows what it heard and ignored."
           />
-          <p className="px-3 py-1 text-[11px] leading-relaxed text-ink-dim">
-            {voice.voiceEnabled
-              ? "Voice-first: what you say is sent when the recording stops. The transcript stays on screen, so a mis-hearing is visible after the fact rather than before it."
-              : "A transcript is inserted into the instruction bar as editable text, never sent on its own — a mis-heard sentence is not an instruction you gave. Turn voice_enabled on in SETTINGS to speak commands instead of dictating them."}
-          </p>
-          {voice.wakeWordEnabled && (
-            <p className="px-3 pb-1 text-[11px] leading-relaxed text-ink-dim">
-              Loudness is measured in this window against the room's own noise floor, so
-              silence costs nothing: only a phrase that crossed it is uploaded, and only
-              one that begins with{" "}
-              <span className="font-mono">{voice.wakeWord}</span> is acted on — the rest
-              is shown as heard and ignored. It stands down while NEXUS is speaking, and
-              stops itself if more than twenty phrases arrive in a minute.
-            </p>
-          )}
         </div>
       </Section>
 
       <Section title="Speech out">
-        <div className="flex flex-col">
+        <div className="flex flex-col gap-1">
           {voices.state === "loading" ? (
             <LoadingState what="the voice configuration" />
           ) : voices.data ? (
@@ -569,23 +557,15 @@ function VoiceTab() {
           )}
           <DataRow
             label="Answers"
-            value={voice.ttsEnabled ? "spoken as well as printed" : "printed only"}
+            value={voice.ttsEnabled ? "spoken + printed" : "printed only"}
             state={voice.ttsEnabled ? "ok" : "idle"}
-            title="tts_enabled. On means every completed answer is synthesised and played here."
+            title="tts_enabled. On means every completed answer is synthesised and played."
           />
           <DataRow
             label="Voice used"
             value={voice.ttsVoice || `${voices.data?.default || "provider default"}`}
             title="tts_voice. Empty means whatever the provider defaults to."
           />
-          <p className="px-3 py-1 text-[11px] leading-relaxed text-ink-dim">
-            The route writes a WAV and returns both its path and a{" "}
-            <span className="font-mono">/api/voice/audio/</span> URL, so this window
-            plays it and the same file can be replayed without paying for synthesis
-            twice. A browser will not start playback until the page has been clicked
-            once; if that happens the instruction bar says so instead of showing a
-            speaking indicator over silence.
-          </p>
           <div className="px-3 pt-1">
             <Button size="sm" icon="wave" onClick={() => go("voice")}>
               Open Voice
@@ -610,7 +590,7 @@ function AiTab() {
     );
   }
   return (
-    <div className="p-2">
+    <div className="p-2 min-h-0 overflow-y-auto">
       <TurnView turn={turn} compact />
       {!running && (
         <div className="mt-2">
@@ -649,13 +629,13 @@ function TasksTab() {
       <EmptyState
         icon="tasks"
         title="No tasks yet"
-        detail="A task is created when an instruction needs several steps. Ask for something multi-step and it will appear here with its plan."
+        detail="Ask for something multi-step and it will appear here with its plan."
       />
     );
   }
 
   return (
-    <ul>
+    <ul className="space-y-1">
       {tasks.data.tasks.map((task) => (
         <li key={task.id}>
           <ListRow onClick={() => go("tasks", task.id)}>
@@ -766,6 +746,132 @@ function durationFromSeconds(seconds: number): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h ${minutes % 60}m`;
   return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+
+/**
+ * SYSTEM tab — live machine state from the system.status tool.
+ * Clean chatbotui-style console with important info only.
+ */
+function SystemTab() {
+  const { link } = useNexus();
+  const status = useAsync(() => api.systemStatus(), []);
+  // Poll less frequently than intelligence panel since this is a secondary view
+  usePoll(status.reload, 30_000, link.connected);
+
+  if (status.state === "loading") {
+    return <LoadingState what="system status" />;
+  }
+
+  if (!status.data) {
+    return (
+      <div className="p-2">
+        <ErrorState
+          what={status.error ?? "The system status tool did not return."}
+          did="Nothing was read from /proc, so no figure below would be real."
+          next={status.offline ? "Start the core, then retry." : status.detail || "Retry."}
+          offline={status.offline}
+          onRetry={status.reload}
+          compact
+        />
+      </div>
+    );
+  }
+
+  const system = status.data.data;
+  const stale = status.state === "error";
+  const memoryState = system.memory.percent_used > 90 ? "warn" : "ok";
+
+  return (
+    <div className="p-2 space-y-3">
+      <Section title="Machine" meta={stale ? "stale" : system.uptime_human}>
+        <DataRow label="Host" value={system.host} />
+        <DataRow label="OS" value={system.os} title={`kernel ${system.kernel}`} />
+        <DataRow
+          label="CPU"
+          value={system.cpu.cores === null ? system.cpu.model : `${system.cpu.cores} cores`}
+          title={system.cpu.model}
+        />
+        <DataRow
+          label="Load"
+          value={
+            system.cpu.load_1m === null
+              ? "not reported"
+              : [system.cpu.load_1m, system.cpu.load_5m, system.cpu.load_15m]
+                  .map((value) => (value === null ? "—" : value.toFixed(2)))
+                  .join("  ")
+          }
+          title="1, 5 and 15 minute load averages from /proc/loadavg."
+        />
+        <DataRow
+          label="Memory"
+          value={`${system.memory.available_human} free of ${system.memory.total_human}`}
+          state={memoryState}
+        />
+        <Meter percent={system.memory.percent_used} label="memory used" />
+      </Section>
+
+      <Section title="Disks">
+        {system.disks.map((disk) => (
+          <div key={disk.mount}>
+            <DataRow
+              label={disk.mount === "/" ? "Disk /" : `Disk ${disk.mount}`}
+              value={`${disk.free_human} free of ${disk.total_human}`}
+              state={disk.percent_used > 90 ? "warn" : "ok"}
+            />
+            <Meter percent={disk.percent_used} label={`${disk.mount} used`} />
+          </div>
+        ))}
+      </Section>
+
+      <Section title="Battery">
+        <DataRow
+          label="Battery"
+          value={
+            system.battery === null
+              ? "none — this machine runs on mains only"
+              : `${system.battery.percent ?? "?"}% · ${system.battery.status}${
+                  system.battery.time_remaining ? ` · ${system.battery.time_remaining} left` : ""
+                }`
+          }
+          state={
+            system.battery === null
+              ? "idle"
+              : system.battery.charging
+                ? "ok"
+                : (system.battery.percent ?? 100) < 20
+                  ? "warn"
+                  : "info"
+          }
+        />
+      </Section>
+
+      <Section title="Network">
+        <DataRow
+          label="Default route"
+          value={system.network.has_default_route ? "present" : "missing"}
+          state={system.network.has_default_route ? "ok" : "warn"}
+          title={system.network.note}
+        />
+        {system.network.interfaces.length > 0 && (
+          <div className="px-3 pb-1 pt-0.5">
+            <ul className="flex flex-wrap gap-1">
+              {system.network.interfaces.map((iface) => (
+                <li key={iface.name}>
+                  <StatusPill state={iface.state === "up" ? "ok" : "idle"} size="sm">
+                    {iface.name} {iface.state}
+                  </StatusPill>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <p className="px-3 pt-1 text-[10px] leading-relaxed text-ink-faint">
+          {system.network.note}
+        </p>
+      </Section>
+    </div>
+  );
 }
 
 

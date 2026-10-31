@@ -13,10 +13,17 @@ Focus is read through ``xdotool`` when present and ``xprop`` otherwise, both of
 which are X11-only. On a Wayland session neither can see the focused window, and
 this monitor says so and stops rather than reporting an empty timeline that looks
 like an idle afternoon (§78).
+
+**Idle detection.** The monitor also detects when the user has been idle (no
+window focus changes, no typing detected) for a configurable period, and
+publishes ``user.idle`` and ``user.active`` events on the bus for the proactive
+engine's attention model.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 import re
 import shutil
@@ -28,9 +35,15 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..logging_setup import get_logger
-from .base import Monitor, MonitorUnavailable, Observation
+from .base import Monitor, MonitorUnavailable, Observation, setting
+from ..core.events import bus
 
 log = get_logger("monitors.window")
+
+#: Idle detection - seconds of no activity before user is considered idle
+IDLE_THRESHOLD_SECONDS = 300.0  # 5 minutes default
+#: How often to check for idle state
+IDLE_CHECK_INTERVAL = 30.0
 
 #: Focus changes are cheap to observe and numerous; the timeline keeps a bounded
 #: window of them in memory and the ambient store (L9) keeps the rest.
@@ -178,6 +191,10 @@ class WindowMonitor(Monitor):
         self._sessions: deque[FocusSession] = deque(maxlen=SESSION_BUFFER)
         self._usage_seconds: dict[str, float] = {}
         self._reader = None  # set in check_available
+        # Idle detection state
+        self._last_activity_mono: float = time.monotonic()
+        self._idle_reported: bool = False
+        self._idle_task: asyncio.Task[None] | None = None
 
     # -------------------------------------------------------------- availability
 
@@ -202,6 +219,17 @@ class WindowMonitor(Monitor):
                 "real one, so window tracking stays off."
             )
 
+    async def on_start(self) -> None:
+        # Start idle detection task
+        self._idle_task = asyncio.create_task(self._idle_checker(), name="window:idle-checker")
+
+    async def on_stop(self) -> None:
+        self._close_current(time.monotonic())
+        if self._idle_task is not None and not self._idle_task.done():
+            self._idle_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._idle_task
+
     # -------------------------------------------------------------------- sample
 
     async def sample(self) -> list[Observation]:
@@ -211,10 +239,20 @@ class WindowMonitor(Monitor):
         focus = self._reader()  # type: ignore[misc]
         now_mono = time.monotonic()
 
+        # Update last activity time on any focus event
+        if focus is not None:
+            self._last_activity_mono = now_mono
+            if self._idle_reported:
+                # User became active again
+                self._idle_reported = False
+                bus.publish("user.active", {"idle": False})
+
         if focus is None:
             # Nothing focused: end the current session so its duration is real
             # rather than continuing to accrue while the desktop is empty.
             closed = self._close_current(now_mono)
+            # Publish window activity event for attention model
+            bus.publish("window.activity", {"activity": "away"})
             return [self._changed(closed, None)] if closed else []
 
         if self._current and focus.window_id == self._current.window_id:
@@ -247,7 +285,43 @@ class WindowMonitor(Monitor):
             started_at=datetime.now(timezone.utc).isoformat(),
             started_monotonic=now_mono,
         )
+
+        # Publish window activity event for attention model - coding for IDEs/terminals, reading for browsers, etc.
+        activity = "idle"
+        app_lower = focus.app.lower()
+        if any(ide in app_lower for ide in ("code", "pycharm", "intellij", "webstorm", "vscode", "vim", "nvim", "emacs")):
+            activity = "coding"
+        elif any(term in app_lower for term in ("terminal", "konsole", "alacritty", "kitty", "wezterm", "gnome-terminal")):
+            activity = "coding"
+        elif any(browser in app_lower for browser in ("firefox", "chrome", "chromium", "brave", "edge", "safari")):
+            activity = "reading"
+        elif any(comm in app_lower for comm in ("slack", "discord", "teams", "zoom", "meet")):
+            activity = "call"
+        elif any(media in app_lower for media in ("vlc", "mpv", "spotify", "youtube", "netflix")):
+            activity = "watching"
+
+        bus.publish("window.activity", {"activity": activity})
+
         return [self._changed(closed, self._current)]
+
+    # ----------------------------------------------------------------- idle detection
+
+    async def _idle_checker(self) -> None:
+        """Periodically check if user has been idle and publish user.idle/user.active events."""
+        while True:
+            try:
+                await asyncio.sleep(IDLE_CHECK_INTERVAL)
+            except asyncio.CancelledError:
+                raise
+            now_mono = time.monotonic()
+            idle_seconds = now_mono - self._last_activity_mono
+            threshold = float(setting("monitor_idle_threshold_seconds", IDLE_THRESHOLD_SECONDS))
+            if idle_seconds >= threshold and not self._idle_reported:
+                self._idle_reported = True
+                bus.publish("user.idle", {"idle": True, "idle_seconds": idle_seconds})
+            elif idle_seconds < threshold and self._idle_reported:
+                self._idle_reported = False
+                bus.publish("user.active", {"idle": False})
 
     async def on_stop(self) -> None:
         self._close_current(time.monotonic())

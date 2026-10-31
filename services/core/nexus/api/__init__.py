@@ -156,6 +156,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         world.start()
 
+        # The continuous learning processor (task C9): observes interactions and
+        # extracts actionable memories, preferences, and corrections. Not behind
+        # the monitoring master switch: remembering what the user explicitly said
+        # is not an act of watching, and the processor checks its own settings
+        # (learning_enabled, default on) on every tick.
+        from ..tools.learning import start_learning
+
+        await start_learning()
+
     bus.publish("core.ready", {"storage_error": app.state.storage_error})
     try:
         yield
@@ -173,6 +182,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from ..core import world
 
         await world.stop()
+        from ..tools.learning import stop_learning
+
+        await stop_learning()
         from ..ai import embeddings
 
         left = await embeddings.drain()

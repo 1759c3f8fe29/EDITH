@@ -206,6 +206,7 @@ class AiCore:
         attachments: list[Any] | None = None,
         mode: str | None = None,
         job: str | None = None,
+        forced_model: str | None = None,  # Direct model key to bypass router
     ) -> AsyncIterator[dict[str, Any]]:
         """Run one turn, yielding events as they happen.
 
@@ -227,6 +228,7 @@ class AiCore:
                 attachments=attachments or [],
                 mode=mode,
                 forced_job=job,
+                forced_model=forced_model,
             ):
                 yield event
         except TurnCancelled as stop:
@@ -276,6 +278,7 @@ class AiCore:
         attachments: list[Any],
         mode: str | None,
         forced_job: str | None,
+        forced_model: str | None = None,  # Direct model key to bypass router
     ) -> AsyncIterator[dict[str, Any]]:
         # ---- classify ------------------------------------------------------
         classification = intent_mod.classify(
@@ -329,11 +332,38 @@ class AiCore:
             job = persona.job_for_mode(effective_mode, classification.job)
 
         # ---- route ---------------------------------------------------------
-        decision = router().resolve(
-            job,
-            needs_vision=classification.needs_vision,
-            needs_tools=classification.needs_tools,
-        )
+        # If forced_model is provided, bypass the router entirely for faster response
+        if forced_model:
+            # Parse provider:model from forced_model
+            provider_id, model_id = forced_model.split(":", 1)
+            from .. import providers
+            from ..router import Decision
+            from ..router.jobs import spec
+
+            provider = providers.get(provider_id)
+            model_spec = None
+            if provider:
+                found = providers.find_model(forced_model)
+                model_spec = found[1] if found else None
+
+            # Create a decision directly without router
+            decision = Decision(
+                job=job or "chat",
+                transport="chat",
+                provider_id=provider_id,
+                model_id=model_id,
+                spec=model_spec,
+                reason=f"Directly selected {model_spec.label if model_spec else model_id} (bypassed router)",
+                considered=[],
+                fallbacks=[],
+                warnings=[],
+            )
+        else:
+            decision = router().resolve(
+                job,
+                needs_vision=classification.needs_vision,
+                needs_tools=classification.needs_tools,
+            )
         turn.decision = decision
         yield {
             "type": "routing",

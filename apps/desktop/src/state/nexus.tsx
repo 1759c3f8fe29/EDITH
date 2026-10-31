@@ -44,8 +44,26 @@ import {
 } from "react";
 
 import { ACCENTS, AccentProvider, type Accent } from "../components/primitives";
-import { api, ApiError, type ActivityRow, type PendingRequest, type Startup } from "../lib/api";
+import {
+  api,
+  ApiError,
+  type ActivityRow,
+  type PendingRequest,
+  type Startup,
+  type TaskDetail,
+  type Speech,
+} from "../lib/api";
 import { link, type LinkStatus } from "../lib/events";
+import {
+  applyEvent,
+  dismiss,
+  isLive,
+  ordered,
+  seed,
+  sweep,
+  type HudState,
+  type HudTask,
+} from "../lib/taskhud";
 import { useAsync, usePoll, type AsyncResult } from "../lib/useAsync";
 import { SCREENS, type ScreenId } from "./screens";
 
@@ -71,6 +89,17 @@ const STARTUP_POLL_MS = 60_000;
  */
 const NOISY_EVENTS = ["terminal.output", "stream.heartbeat"];
 
+/** The task statuses that mean "still going", as the list route's `statuses=` filter. */
+const LIVE_TASK_STATUSES = "pending,running,waiting_permission";
+
+/**
+ * How often finished tasks are reaped from the HUD.
+ *
+ * Cheap by construction: `sweep` returns the same object when nothing has passed its
+ * hold window, so the tick costs a set-compare while nothing is ending.
+ */
+const TASK_SWEEP_MS = 1_000;
+
 const ACCENT_KEY = "nexus.accent";
 const SCREEN_KEY = "nexus.screen";
 
@@ -82,6 +111,24 @@ export type RunningTool = {
   description: string;
   startedAt: number;
   taskId: string | null;
+  stepId: string | null;
+  /** Composite key (tool:taskId:stepId) so concurrent runs of the same tool are distinguishable. */
+  runKey: string;
+};
+
+/** A proactive suggestion from the engine (L10) — a proposal the user can act on. */
+export type ProactiveSuggestion = {
+  id: string; // activity_id
+  kind: string;
+  summary: string;
+  judgement: Record<string, unknown>;
+  held: boolean;
+  suppressed: number;
+  action?: {
+    tool: string;
+    params: Record<string, unknown>;
+    label: string;
+  };
 };
 
 export type NexusValue = {
@@ -101,6 +148,34 @@ export type NexusValue = {
 
   /* ---- what is running on this machine right now ---- */
   runningTools: RunningTool[];
+
+  /* ---- multi-step work, as it happens (§24, §80) ---- */
+  /**
+   * Every task the HUD is showing, in the order it draws them. Live tasks first.
+   * Seeded from the core and then fed by `task.*` events — never by a guess about
+   * what a button press should have done.
+   */
+  tasks: HudTask[];
+  /** Task ids with a stop/retry in flight, so their buttons can be disabled. */
+  taskBusy: string[];
+  /** Why the last stop/retry on a task failed, in the core's own words. */
+  taskErrors: Record<string, string>;
+  stopTask: (id: string) => void;
+  retryTask: (id: string) => void;
+  /** Carry on a task the core left `interrupted`. See the note at the implementation. */
+  runTask: (id: string) => void;
+  /** Stop every live task. Each is cancelled independently; the failures are reported. */
+  stopAllTasks: () => void;
+  /** Take one task off the HUD. Display only — nothing on the core changes. */
+  dismissTask: (id: string) => void;
+
+  /* ---- proactive suggestions (Ultron-level AI) ---- */
+  /** Active proactive suggestions the user can act on or dismiss. */
+  proactiveSuggestions: ProactiveSuggestion[];
+  /** Dismiss a proactive suggestion. */
+  dismissProactiveSuggestion: (id: string) => void;
+  /** Speak a proactive announcement via TTS. */
+  speakProactive: (text: string) => Promise<Speech | null>;
 
   /* ---- the log ---- */
   activity: ActivityRow[];
@@ -186,6 +261,160 @@ export function NexusProvider({ children }: { children: ReactNode }) {
 
   const [runningTools, setRunningTools] = useState<RunningTool[]>([]);
 
+  /* ---------------------------------------------------------------- tasks */
+
+  const [tasks, setTasks] = useState<HudState>({});
+  const [taskBusy, setTaskBusy] = useState<string[]>([]);
+  const [taskErrors, setTaskErrors] = useState<Record<string, string>>({});
+
+  /**
+   * Merge one task's full detail — the task, its steps, its real counts.
+   *
+   * `GET /api/tasks/{id}` returns `progress` *beside* the task rather than inside it,
+   * so the two are joined here. Both halves come from the core; neither is derived.
+   */
+  const applyDetail = useCallback((detail: TaskDetail) => {
+    setTasks((current) =>
+      seed(current, [{ ...detail.task, progress: detail.progress }], Date.now()),
+    );
+  }, []);
+
+  /*
+   * The seed. The core is the authority on which tasks exist; the socket is the
+   * authority on what they are doing from then on.
+   *
+   * Two reads rather than one, deliberately. `GET /api/tasks` answers "which tasks
+   * are live" — it filters in SQL, and a run whose `task.started` has scrolled out of
+   * the replay buffer is in its reply and would otherwise be invisible. But it
+   * returns task *rows*: no steps, and no `progress`, which on this panel would
+   * render as "no steps yet". That is a claim, and a false one. So each live task is
+   * then read in full. It is a handful of requests, bounded by how much work is
+   * actually running, and it happens on connect and after a button — not on a timer.
+   *
+   * A task whose detail read fails is not shown at all, rather than shown with
+   * invented zeroes. Its next event carries the whole snapshot anyway.
+   */
+  const refreshTasks = useCallback(() => {
+    api.tasks
+      .list({ statuses: LIVE_TASK_STATUSES, limit: 50 })
+      .then((result) => {
+        for (const row of result.tasks) {
+          api.tasks
+            .get(row.id)
+            .then(applyDetail)
+            .catch(() => {
+              /* see above: absence over a guess */
+            });
+        }
+      })
+      .catch(() => {
+        // Left alone rather than emptied, for the same reason the permission queue
+        // is: an unreachable core does not mean nothing is running.
+      });
+  }, [applyDetail]);
+
+  /*
+   * A local clock, because §80's other half is that a finished task must not stay on
+   * screen as if it were still going. `sweep` is identity-preserving when there is
+   * nothing to reap, so this is a set-compare per second rather than a render.
+   */
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setTasks((current) => sweep(current, Date.now()));
+    }, TASK_SWEEP_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  /*
+   * One action per task at a time, guarded on a ref rather than on `taskBusy`:
+   * two clicks in the same frame both read the pre-render value, and both would
+   * fire. Pressing Stop twice is not a cosmetic problem — it is two cancels racing.
+   */
+  const acting = useRef(new Set<string>());
+
+  const actOnTask = useCallback(
+    (id: string, act: () => Promise<TaskDetail>) => {
+      if (acting.current.has(id)) return;
+      acting.current.add(id);
+      setTaskBusy((current) => [...current, id]);
+      setTaskErrors((current) => {
+        if (!(id in current)) return current;
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+
+      act()
+        .then((detail) => {
+          /*
+           * The response body is the core's own snapshot of the task *after* the
+           * write, so applying it is a read, not optimism. It matters for Stop: a
+           * cancelled task is not in the `statuses=` list above, so without this the
+           * HUD would keep drawing a spinner until the matching event arrived — the
+           * exact "stopped run wearing a spinner" failure this panel exists to
+           * remove.
+           */
+          applyDetail(detail);
+        })
+        .catch((cause: unknown) => {
+          setTaskErrors((current) => ({ ...current, [id]: sentence(cause) }));
+        })
+        .finally(() => {
+          acting.current.delete(id);
+          setTaskBusy((current) => current.filter((item) => item !== id));
+        });
+    },
+    [applyDetail],
+  );
+
+  const stopTask = useCallback(
+    (id: string) => actOnTask(id, () => api.tasks.cancel(id)),
+    [actOnTask],
+  );
+
+  const retryTask = useCallback(
+    (id: string) => actOnTask(id, () => api.tasks.retry(id)),
+    [actOnTask],
+  );
+
+  /*
+   * Carry on an interrupted task. Not the same operation as a retry: `interrupted`
+   * means the core process died mid-run, the completed steps are still completed, and
+   * `POST /run` picks up at the next pending one — where a retry would *rewrite* the
+   * statuses of steps that failed, which is a different decision and a different
+   * button.
+   */
+  const runTask = useCallback(
+    (id: string) => actOnTask(id, () => api.tasks.run(id)),
+    [actOnTask],
+  );
+
+  const dismissTask = useCallback((id: string) => {
+    setTasks((current) => dismiss(current, id));
+    setTaskErrors((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
+  /*
+   * Emergency stop. Deliberately not `Promise.all` over one shared failure: each run
+   * is independent, and one core-side refusal must not stop the others being asked.
+   * `actOnTask` already reports per task, so the user sees which one did not stop.
+   */
+  // Read through a ref rather than closing over `tasks`: this callback is handed to a
+  // button and must see the list as it is when it is pressed, not as it was when the
+  // provider last built its value object.
+  const tasksRef = useRef(tasks);
+  tasksRef.current = tasks;
+  const stopAllTasks = useCallback(() => {
+    for (const task of ordered(tasksRef.current)) {
+      if (isLive(task.status)) actOnTask(task.id, () => api.tasks.cancel(task.id));
+    }
+  }, [actOnTask]);
+
   /* ------------------------------------------------------------- the log */
 
   const feed = useAsync(() => api.activity({ limit: ACTIVITY_LIMIT }), []);
@@ -237,27 +466,74 @@ export function NexusProvider({ children }: { children: ReactNode }) {
           return;
         }
 
+        if (type.startsWith("task.")) {
+          // Every `task.*` event carries a whole snapshot (the task, its steps, real
+          // counts) and every `task.step.*` one carries a step; `lib/taskhud.ts` is
+          // where the merge lives, including the part that makes a replayed event
+          // harmless. Applied here rather than in the panel because the panel
+          // unmounts and a run does not.
+          setTasks((current) => applyEvent(current, type, payload, Date.now()));
+          // Falls through to the feed refresh below: a task event is a real thing
+          // that happened and belongs in the activity log.
+        }
+
+        if (type === "proactive.suggestion") {
+          // Proactive engine proposals — add to visible suggestions UI
+          const payload_ = payload as {
+            activity_id?: string;
+            judgement?: Record<string, unknown>;
+            summary?: string;
+            held?: boolean;
+            suppressed?: number;
+            action?: { tool: string; params: Record<string, unknown>; label: string };
+          };
+          const suggestion: ProactiveSuggestion = {
+            id: payload_.activity_id ?? crypto.randomUUID(),
+            kind: String(payload_.judgement?.kind ?? "proactive"),
+            summary: payload_.summary ?? "NEXUS has a suggestion",
+            judgement: payload_.judgement ?? {},
+            held: payload_.held ?? false,
+            suppressed: payload_.suppressed ?? 0,
+            action: payload_.action,
+          };
+          setProactiveSuggestions((current) => {
+            // Dedupe by activity_id
+            if (current.some((s) => s.id === suggestion.id)) return current;
+            return [...current, suggestion];
+          });
+          queueFeedRefresh();
+          return;
+        }
+
         if (type === "tool.started") {
+          const toolName = String(payload.tool ?? "unknown");
+          const taskId = typeof payload.task_id === "string" ? payload.task_id : null;
+          const stepId = typeof payload.step_id === "string" ? payload.step_id : null;
+          // Use a composite key so concurrent runs of the same tool are distinguishable
+          const runKey = `${toolName}:${taskId ?? "notask"}:${stepId ?? "nostep"}`;
           setRunningTools((current) => [
             ...current,
             {
-              tool: String(payload.tool ?? "unknown"),
+              tool: toolName,
               title: String(payload.title ?? payload.tool ?? "A tool"),
               description: String(payload.description ?? ""),
               startedAt: Date.now(),
-              taskId: typeof payload.task_id === "string" ? payload.task_id : null,
+              taskId,
+              stepId,
+              runKey,
             },
           ]);
           return;
         }
 
         if (type === "tool.finished" || type === "tool.blocked") {
-          // Removed by name, oldest first: `tool.started` carries no run id, so
-          // two concurrent runs of the same tool are indistinguishable. Clearing
-          // the oldest keeps the count right, which is what the state depends on.
-          const name = String(payload.tool ?? "");
+          // Match by runKey (composite of tool+task+step) to distinguish concurrent runs
+          const toolName = String(payload.tool ?? "");
+          const taskId = typeof payload.task_id === "string" ? payload.task_id : null;
+          const stepId = typeof payload.step_id === "string" ? payload.step_id : null;
+          const runKey = `${toolName}:${taskId ?? "notask"}:${stepId ?? "nostep"}`;
           setRunningTools((current) => {
-            const at = current.findIndex((item) => item.tool === name);
+            const at = current.findIndex((item) => item.runKey === runKey);
             if (at === -1) return current;
             return [...current.slice(0, at), ...current.slice(at + 1)];
           });
@@ -282,20 +558,25 @@ export function NexusProvider({ children }: { children: ReactNode }) {
     if (!connected) return;
     seedPending();
     reloadFeed();
+    refreshTasks();
     startup.reload();
     // `startup.reload` is stable but not worth listing — it would re-run this on
     // every render of the provider.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, seedPending, reloadFeed]);
+  }, [connected, seedPending, reloadFeed, refreshTasks]);
 
   /*
-   * Losing the connection clears the running-tool list, and that is a correctness
-   * fix rather than tidying: those entries are cleared by `tool.finished`, which
-   * arrives over the socket. With the socket down they would sit there forever, and
-   * the sphere would show EXECUTING for a tool that finished ten minutes ago.
+   * Losing the connection clears the running-tool list and the task HUD, and that is
+   * a correctness fix rather than tidying: both are kept current by events that
+   * arrive over the socket. With the socket down, a tool and a task that finished
+   * ten minutes ago would sit there forever, and the sphere would show EXECUTING and
+   * the HUD a spinner for work that is not happening. A stale "working" is worse than
+   * no answer, because the user acts on it.
    */
   useEffect(() => {
-    if (!connected) setRunningTools([]);
+    if (connected) return;
+    setRunningTools([]);
+    setTasks({});
   }, [connected]);
 
   usePoll(reloadFeed, ACTIVITY_POLL_MS, connected);
@@ -356,6 +637,31 @@ export function NexusProvider({ children }: { children: ReactNode }) {
   const [screen, setScreen] = useState<ScreenId>(storedScreen);
   const [focus, setFocus] = useState<string | null>(null);
 
+  // Proactive suggestions state (L10 - Ultron-level AI)
+  const [proactiveSuggestions, setProactiveSuggestions] = useState<ProactiveSuggestion[]>([]);
+
+  const dismissProactiveSuggestion = useCallback((id: string) => {
+    setProactiveSuggestions((current) => current.filter((s) => s.id !== id));
+  }, []);
+
+  /** Speak a proactive announcement via TTS. Returns the speech info or null if TTS is disabled. */
+  const speakProactive = useCallback(async (text: string): Promise<Speech | null> => {
+    try {
+      // Check if TTS is enabled in settings
+      const settings = await api.settings.get();
+      const ttsEnabled = settings.settings.tts_enabled === true;
+      if (!ttsEnabled) {
+        console.log("[proactive] TTS disabled, skipping speak");
+        return null;
+      }
+      const speech = await api.voice.speak(text);
+      return speech;
+    } catch (cause) {
+      console.warn("[proactive] speak failed:", cause);
+      return null;
+    }
+  }, []);
+
   const go = useCallback((next: ScreenId, nextFocus: string | null = null) => {
     setScreen(next);
     setFocus(nextFocus);
@@ -378,6 +684,17 @@ export function NexusProvider({ children }: { children: ReactNode }) {
       respond,
       withdraw,
       runningTools,
+      tasks: ordered(tasks),
+      taskBusy,
+      taskErrors,
+      stopTask,
+      retryTask,
+      runTask,
+      stopAllTasks,
+      dismissTask,
+      proactiveSuggestions,
+      dismissProactiveSuggestion,
+      speakProactive,
       activity: feed.data?.activity ?? [],
       activityCounts: feed.data?.counts ?? {},
       activityError: feed.state === "error" ? feed.error : "",
@@ -397,6 +714,17 @@ export function NexusProvider({ children }: { children: ReactNode }) {
       respond,
       withdraw,
       runningTools,
+      tasks,
+      taskBusy,
+      taskErrors,
+      stopTask,
+      retryTask,
+      runTask,
+      stopAllTasks,
+      dismissTask,
+      proactiveSuggestions,
+      dismissProactiveSuggestion,
+      speakProactive,
       feed,
       reloadFeed,
       accent,

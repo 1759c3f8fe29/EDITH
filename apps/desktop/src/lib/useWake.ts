@@ -219,7 +219,7 @@ export function useWake({ enabled, wakeWord, language, onCommand }: WakeOptions)
         setRemaining(budget.remaining(now));
         setState("checking");
       }
-      const wav = new Blob([encodeWav(blocks, rate)], { type: "audio/wav" });
+      const wav = new Blob([encodeWav(blocks, rate) as unknown as ArrayBuffer], { type: "audio/wav" });
       try {
         const heard = await api.voice.transcribe(wav, "utterance.wav", speech.current || undefined);
         if (dead) return;

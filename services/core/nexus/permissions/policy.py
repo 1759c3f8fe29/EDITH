@@ -22,8 +22,10 @@ Two ideas do most of the work:
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
+import shutil
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import Any
@@ -397,6 +399,16 @@ def _protected_path_in_command(command: str) -> Refusal | None:
     ``/proc/meminfo``, ``/etc/os-release`` -- keep working; a path with no read
     exception is refused for either direction anyway.
 
+    **Being run is not being read.** The *first* token names a program the shell
+    will execute, and executing an installed binary is not the act this guard
+    exists to prevent. Measured on this machine: a command naming
+    ``/usr/bin/python3.12`` was refused as "reading a system file", so **NEXUS
+    could not run Python at all** -- and the same applied to ``git``, ``npm`` and
+    every other tool that lives under ``/usr``. A dev assistant that cannot invoke
+    a compiler is not one. So the head token is skipped when it resolves to an
+    executable, and everything else in the command is still checked: ``python3
+    /etc/shadow`` is refused on the second token, which is the file being read.
+
     **This is literal-path matching, and it is not proof against obfuscation.**
     A command can reach a protected file through a variable, an encoded string, or
     a symlink created in the same command. It is effective against the case it is
@@ -406,7 +418,14 @@ def _protected_path_in_command(command: str) -> Refusal | None:
     (``terminal_allowed``) and every command is a critical-risk prompt showing the
     exact text that will run.
     """
-    for token in _path_tokens(command):
+    tokens = _path_tokens(command)
+    for index, token in enumerate(tokens):
+        if index == 0 and _is_executable(token):
+            # The program being invoked. Checked for executability rather than
+            # skipped blindly, so `cat /usr/lib/secret` is still refused: `cat` is
+            # a bare name (not a path), and a full path to a *readable data file*
+            # under a protected tree is not executable and stays refused.
+            continue
         refusal = path_refusal(token, write=False)
         if refusal is not None:
             return Refusal(
@@ -415,6 +434,26 @@ def _protected_path_in_command(command: str) -> Refusal | None:
                 "not run a command that names that path.",
             )
     return None
+
+
+def _is_executable(token: str) -> bool:
+    """Whether this token names a program that exists and can be run.
+
+    Resolves through PATH for a bare name (``python3``) and checks the file
+    directly for a path (``/usr/bin/python3.12``). ``os.access(X_OK)`` is the
+    question that matters: a non-executable file under ``/usr`` is data, and
+    reading it is exactly what the guard should still refuse.
+    """
+    if not token or token.startswith("-"):
+        return False
+    candidate = token if os.sep in token else shutil.which(token)
+    if not candidate:
+        return False
+    try:
+        path = Path(candidate).expanduser()
+        return path.is_file() and os.access(path, os.X_OK)
+    except OSError:
+        return False
 
 
 def command_is_destructive(command: str) -> bool:

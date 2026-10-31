@@ -42,7 +42,6 @@ import {
   Panel,
   Section,
   Select,
-  StateDot,
   StatusPill,
   Tabs,
   Toggle,
@@ -82,18 +81,14 @@ export function AwarenessScreen() {
   usePoll(overview.reload, OVERVIEW_POLL_MS, link.connected);
 
   const data = overview.data;
-  const watching = data?.watching ?? [];
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 p-2">
-      <WatchingBanner watching={watching} loaded={Boolean(data)} master={data?.master_enabled} />
-
       <Panel
         title="AWARENESS"
         meta={data ? `${data.monitors.length} monitors` : undefined}
         className="min-h-0 flex-1"
         bodyClassName="flex min-h-0 flex-1 flex-col"
-        active={watching.length > 0}
         actions={
           <Button
             size="sm"
@@ -147,70 +142,6 @@ export function AwarenessScreen() {
     </div>
   );
 }
-
-/**
- * The standing "you are being observed" indicator (L5).
- *
- * It is computed from `watching`, which the supervisor builds from monitors that are
- * *running*, not from the settings. A settings-derived indicator would say "watching"
- * for a monitor that crashed on start, which is the one lie this banner cannot tell.
- */
-function WatchingBanner({
-  watching,
-  loaded,
-  master,
-}: {
-  watching: MonitorsOverview["watching"];
-  loaded: boolean;
-  master: boolean | undefined;
-}) {
-  if (!loaded) {
-    return (
-      <div className="chamfer-sm flex items-center gap-2 border border-line bg-base px-3 py-2">
-        <StateDot state="idle" />
-        <p className="text-[11px] text-ink-dim">
-          Not known yet — the core has not answered, so this cannot say whether anything
-          is watching.
-        </p>
-      </div>
-    );
-  }
-
-  if (watching.length === 0) {
-    return (
-      <div className="chamfer-sm flex items-center gap-2 border border-line bg-base px-3 py-2">
-        <StateDot state="ok" />
-        <p className="text-[11px] text-ink-soft">
-          Nothing is observing you.{" "}
-          {master === false
-            ? "Awareness is switched off entirely."
-            : "The screen, window and clipboard monitors are not running."}
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="chamfer-sm border border-warn/45 bg-warn/8 px-3 py-2">
-      <div className="flex items-center gap-2">
-        <StateDot state="active" pulse />
-        <span className="label text-warn">
-          Being observed by {watching.length} monitor{watching.length === 1 ? "" : "s"}
-        </span>
-      </div>
-      <ul className="mt-1.5 space-y-0.5">
-        {watching.map((entry) => (
-          <li key={entry.monitor} className="text-[11px] leading-relaxed text-ink-soft">
-            <span className="font-mono text-[10px] text-warn">{entry.monitor}</span> —{" "}
-            {entry.description || entry.title}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-/* -------------------------------------------------------------------- writer */
 
 /**
  * `useAction` runs a closure that takes no arguments, but every control here writes a

@@ -25,19 +25,26 @@
 
 @theme {
   /* Base: near-black, four steps of elevation. Not pure #000 -- a true black
-   * makes the chamfer edges invisible on OLED and kills the sense of layering. */
-  --color-void: #050607;
-  --color-base: #0a0c0e;
-  --color-panel: #101316;
-  --color-raised: #171b1f;
-  --color-line: #23282e;
-  --color-line-bright: #333a42;
+   * makes the chamfer edges invisible on OLED and kills the sense of layering.
+   *
+   * The four levels were pulled down toward the reference's depth (#020206 to
+   * #0a0a0f): the previous set started at #0a0c0e and the whole window read as
+   * charcoal rather than black, which is what made the accent look like a
+   * sticker on top instead of light coming out of the surface. Elevation steps
+   * are wider now for the same reason -- on a darker floor the same delta reads
+   * as less. */
+  --color-void: #020205;
+  --color-base: #05060a;
+  --color-panel: #0a0c12;
+  --color-raised: #12151c;
+  --color-line: #1e232c;
+  --color-line-bright: #313a47;
 
   /* Text: four levels. Anything below `dim` fails contrast on `panel`. */
-  --color-ink: #e8edf2;
-  --color-ink-soft: #a8b3bd;
-  --color-ink-dim: #6b7681;
-  --color-ink-faint: #464f58;
+  --color-ink: #e9eef5;
+  --color-ink-soft: #a8b3c0;
+  --color-ink-dim: #6b7683;
+  --color-ink-faint: #454e59;
 
   /* Semantic states. Each is paired with a label in the UI, never used alone. */
   --color-ok: #3ddc97;
@@ -46,15 +53,23 @@
   --color-info: #4aa8ff;
 
   --font-mono: "JetBrains Mono", "IBM Plex Mono", "SF Mono", ui-monospace, monospace;
-  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, sans-serif;
+  /* The display face, for screen titles and the state label under the sphere.
+   * One job: the words a person reads a metre away. Body text and labels keep
+   * Inter and JetBrains Mono, because a display face at 11px is a downgrade. */
+  --font-display: "Space Grotesk", "Inter Variable", system-ui, sans-serif;
 
   /* The chamfer size. One number so every panel agrees. */
   --chamfer: 10px;
   --chamfer-sm: 6px;
 }
 
-/* Accent themes. The references show cyan and crimson; both ship, and the token
- * indirection means a third costs one block. Set on <html data-accent="...">. */
+/* Accent themes. The reference shows the same interface in each of these; the
+ * token indirection means an eighth costs one block. Set on <html
+ * data-accent="...">.
+ *
+ * `celestial` is the reference's name for its blue and is kept as-is rather than
+ * renamed to `blue`, so the two projects name the same colour the same way. */
 :root,
 :root[data-accent="cyan"] {
   --accent: #22d3ee;
@@ -62,6 +77,38 @@
   --accent-dim: #0e7490;
   --accent-glow: rgb(34 211 238 / 0.18);
   --accent-ink: #062024;
+}
+
+:root[data-accent="celestial"] {
+  --accent: #38bdf8;
+  --accent-bright: #7dd3fc;
+  --accent-dim: #075985;
+  --accent-glow: rgb(56 189 248 / 0.18);
+  --accent-ink: #041e2e;
+}
+
+:root[data-accent="emerald"] {
+  --accent: #10b981;
+  --accent-bright: #4ade9f;
+  --accent-dim: #047857;
+  --accent-glow: rgb(16 185 129 / 0.18);
+  --accent-ink: #03251b;
+}
+
+:root[data-accent="gold"] {
+  --accent: #eab308;
+  --accent-bright: #fde047;
+  --accent-dim: #a16207;
+  --accent-glow: rgb(234 179 8 / 0.18);
+  --accent-ink: #2a2003;
+}
+
+:root[data-accent="rose"] {
+  --accent: #f43f5e;
+  --accent-bright: #fb7185;
+  --accent-dim: #be123c;
+  --accent-glow: rgb(244 63 94 / 0.18);
+  --accent-ink: #2c0611;
 }
 
 :root[data-accent="crimson"] {
@@ -228,6 +275,67 @@
     background: currentColor;
     transform: rotate(45deg);
   }
+
+  /* The holographic stage (§94). The reference builds its centre from three
+   * stacked layers: an ambient backlight, a projector beam rising from the
+   * floor, and foreground particles. NEXUS had only the sphere, floating on the
+   * panel with nothing under it.
+   *
+   * The character the reference centres its stage on is deliberately absent.
+   * What is ported is the *stage*: the light around and beneath the thing that
+   * is actually there.
+   *
+   * The first two layers are static. Both are painted once from a gradient and
+   * carry no animation and no filter, so §53's objection -- constant motion,
+   * expensive blur -- does not apply to either. The reference makes its glow
+   * with `filter: blur(140px)`, which forces a full-size offscreen buffer that
+   * is re-composited on every paint; a radial gradient is the same picture for
+   * a fraction of the cost, and on a surface that is on screen all day that
+   * difference is the whole reason to prefer it.
+   *
+   * Intensity is carried on the element's own opacity rather than in the
+   * gradient stops. That keeps the two colour values out of the alpha channel
+   * (no `color-mix`), so the stage works on any webview the packaged app lands
+   * on rather than only the recent ones. */
+  .stage {
+    position: relative;
+    isolation: isolate;
+  }
+
+  .stage-glow {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background: radial-gradient(circle at 50% 46%, var(--accent) 0%, transparent 68%);
+    opacity: 0.16;
+    transition: opacity 900ms ease;
+  }
+
+  .stage-beam {
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    z-index: 0;
+    width: min(76%, 32rem);
+    height: 58%;
+    transform: translateX(-50%);
+    pointer-events: none;
+    clip-path: polygon(38% 0, 62% 0, 100% 100%, 0 100%);
+    background: linear-gradient(to bottom, transparent 4%, var(--accent) 100%);
+    opacity: 0.1;
+  }
+
+  /* The state label under the sphere, set in the display face. This is the one
+   * string on the screen meant to be read from across a room.
+   *
+   * A component-layer class loses to any `font-mono`/`font-sans` utility on the
+   * same element (utilities layer beats components layer), so call sites must
+   * not pair one with it. Kept as a class rather than inlined so a future face
+   * change is one edit. */
+  .stage-caption {
+    font-family: var(--font-display);
+  }
 }
 
 /* The sphere's motion (§94). Three keyframes, declared once, driven entirely by
@@ -268,6 +376,11 @@
   }
 }
 
+@keyframes animate-orb-float {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-4px) scale(1.02); }
+}
+
 /* A new activity row or headline arriving: one short fade, not a slide-in. §94 —
  * motion tells the user something changed, then gets out of the way. */
 @keyframes nexus-arrive {
@@ -279,6 +392,26 @@
     opacity: 1;
     transform: none;
   }
+}
+
+@keyframes wave-expand {
+  0% { transform: scale(0.5); opacity: 0.6; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+@keyframes orb-float {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-4px) scale(1.02); }
+}
+
+@keyframes bar-dance {
+  0% { height: 20%; }
+  100% { height: 100%; }
+}
+
+@keyframes animate-bar-dance {
+  0% { height: 20%; }
+  100% { height: 100%; }
 }
 
 @layer utilities {

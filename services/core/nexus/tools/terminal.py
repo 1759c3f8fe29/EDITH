@@ -195,6 +195,9 @@ def _terminate(proc: subprocess.Popen[bytes]) -> str:
     # timeout while this function was still shepherding a live process -- and
     # nobody would ever kill it.
     timeout_s=630.0,
+    voice_start="Running command: {command}",
+    voice_timeout="The command is taking too long. Stopping it.",
+    voice_error="The command failed.",
     parameters={
         "type": "object",
         "properties": {

@@ -144,11 +144,13 @@ class EventLink {
   }
 
   private open(): void {
-    const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-    // Same-origin, so the Vite dev proxy and the packaged shell both work without
-    // a configured host. A hardcoded 127.0.0.1:8787 would break the moment the UI
-    // is served from anywhere else.
-    const url = `${scheme}://${window.location.host}/ws/events?after_seq=${this.lastSeq}`;
+    // Detect Tauri environment: window.__TAURI__ exists in Tauri apps
+    const isTauri = typeof window !== "undefined" && window.__TAURI__ !== undefined;
+    const scheme = isTauri ? "ws" : (window.location.protocol === "https:" ? "wss" : "ws");
+
+    // In Tauri, use the configured core address; in web, use same-origin
+    const host = isTauri ? "127.0.0.1:8787" : window.location.host;
+    const url = `${scheme}://${host}/ws/events?after_seq=${this.lastSeq}`;
 
     let socket: WebSocket;
     try {

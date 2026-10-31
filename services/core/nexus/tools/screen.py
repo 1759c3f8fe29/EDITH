@@ -149,6 +149,9 @@ def _verify_capture(params: dict[str, Any], result: ToolResult) -> tuple[bool, s
     verifier=_verify_capture,
     requires=(_BACKEND_REQUIREMENT,),
     timeout_s=25.0,
+    voice_start="Taking a screenshot",
+    voice_timeout="The screenshot is taking too long.",
+    voice_error="Could not take the screenshot.",
     parameters={
         "type": "object",
         "properties": {

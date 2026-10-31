@@ -67,12 +67,24 @@ def can_be_chosen(job: str, key: str) -> str | None:
             return f"{provider_id} does not list {model_id!r}"
         return None
 
-    # Media is a request *shape*, not a vendor: speech is Mistral's and OCR, embedding
-    # and rerank are NVIDIA's, so there are two catalogues to check rather than one.
+    # Media is a request *shape*, not a vendor: speech is Mistral's, Groq's and
+    # NVIDIA's, and OCR, embedding and rerank are NVIDIA's. So there are three
+    # catalogues to check rather than one -- and this branch is deliberately the
+    # same shape as ``Router._why_not_media``, because a guard that drifts from the
+    # code it guards is worse than no guard: it would pass a chain entry the router
+    # then refuses, or fail one the router accepts.
     if provider_id == "mistral":
         served = providers.mistral_audio.serves(job)
         if model_id not in served:
             return f"mistral audio does not use {model_id!r} for {job} (it uses {served!r})"
+        return None
+
+    if provider_id == "groq":
+        if not providers.groq_audio.serves(job):
+            return f"groq audio does not do {job} at all"
+        offered = providers.groq_audio.models_for(job)
+        if model_id not in offered:
+            return f"groq audio does not use {model_id!r} for {job} (it offers {offered!r})"
         return None
 
     endpoint = providers.nim_catalogue.BY_MODEL.get(model_id)

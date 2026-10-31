@@ -314,6 +314,9 @@ def _verify_launch(params: dict[str, Any], result: ToolResult) -> tuple[bool, st
     idempotent=False,
     verifier=_verify_launch,
     timeout_s=15.0,
+    voice_start="Opening {app}",
+    voice_timeout="{app} is not responding. Trying again.",
+    voice_error="Could not open {app}.",
     parameters={
         "type": "object",
         "properties": {

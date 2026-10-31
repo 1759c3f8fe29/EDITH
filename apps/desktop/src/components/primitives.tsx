@@ -28,6 +28,7 @@ import {
   type ReactNode,
 } from "react";
 
+import { personalizeProactiveSuggestion, type Personality } from "../lib/personality";
 import { Icon, Spinner, type IconName } from "./Icon";
 
 /* ------------------------------------------------------------------ panels */
@@ -534,6 +535,75 @@ export function ActionResult({
   );
 }
 
+/** A proactive suggestion toast — Ultron-level AI that speaks up unprompted. */
+export function ProactiveToast({
+  suggestion,
+  onDismiss,
+  onAct,
+  speakProactive,
+  personality,
+}: {
+  suggestion: {
+    id: string;
+    kind: string;
+    summary: string;
+    action?: { tool: string; params: Record<string, unknown>; label: string };
+  };
+  onDismiss: (id: string) => void;
+  onAct: (suggestion: { tool: string; params: Record<string, unknown> }) => void;
+  /** Optional TTS function to speak the suggestion aloud. */
+  speakProactive?: (text: string) => Promise<unknown>;
+  /** Active personality for framing the suggestion. */
+  personality?: Personality;
+}) {
+  const hasAction = !!suggestion.action;
+  const personalizedSummary = personality
+    ? personalizeProactiveSuggestion(personality, suggestion.summary, hasAction)
+    : suggestion.summary;
+
+  // Auto-speak the suggestion when the toast appears
+  useEffect(() => {
+    if (speakProactive && personalizedSummary) {
+      speakProactive(personalizedSummary);
+    }
+  }, [suggestion.id, speakProactive, personalizedSummary]);
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="chamfer border-accent/40 bg-accent/8 border flex items-start gap-2 px-3 py-2.5 text-xs animate-arrive"
+      style={{ animationDelay: "0ms" }}
+    >
+      <Icon name="sparkles" size={14} className="mt-0.5 shrink-0 text-accent" />
+      <div className="flex-1 min-w-0 space-y-1.5">
+        <p className="label marker text-accent">{personalizedSummary}</p>
+        <p className="font-mono text-[10px] text-ink-dim">Kind: {suggestion.kind}</p>
+        {hasAction && (
+          <div className="flex items-center gap-2 pt-1">
+            <Button
+              size="sm"
+              tone="accent"
+              icon="eye"
+              onClick={() => onAct(suggestion.action!)}
+            >
+              {suggestion.action!.label}
+            </Button>
+            <Button size="sm" tone="ghost" icon="close" onClick={() => onDismiss(suggestion.id)}>
+              Dismiss
+            </Button>
+          </div>
+        )}
+        {!hasAction && (
+          <Button size="sm" tone="ghost" icon="close" onClick={() => onDismiss(suggestion.id)}>
+            Dismiss
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------- fields */
 
 /** A labelled input. The label is a real `<label>` — §55 wants programmatic association. */
@@ -646,12 +716,14 @@ export function Select<T extends string>({
   options,
   id,
   disabled,
+  renderOption,
 }: {
   value: T;
   onChange: (next: T) => void;
   options: Array<{ value: T; label: string }>;
   id?: string;
   disabled?: boolean;
+  renderOption?: (option: { value: T; label: string }) => React.ReactNode;
 }) {
   return (
     <select
@@ -663,7 +735,7 @@ export function Select<T extends string>({
     >
       {options.map((option) => (
         <option key={option.value} value={option.value} className="bg-panel">
-          {option.label}
+          {renderOption ? renderOption(option) : option.label}
         </option>
       ))}
     </select>
@@ -1024,7 +1096,16 @@ export function duration(ms: number | null | undefined): string {
 
 /* ------------------------------------------------- accent theme (§52 tokens) */
 
-export const ACCENTS = ["cyan", "crimson", "amber", "violet"] as const;
+export const ACCENTS = [
+  "cyan",
+  "celestial",
+  "emerald",
+  "gold",
+  "rose",
+  "crimson",
+  "amber",
+  "violet",
+] as const;
 export type Accent = (typeof ACCENTS)[number];
 
 const AccentContext = createContext<{ accent: Accent; setAccent: (next: Accent) => void }>({

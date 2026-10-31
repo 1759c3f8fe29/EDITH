@@ -103,7 +103,7 @@ t("silence closes a phrase and it is offered for transcription", () => {
 });
 
 t("a cough is discarded rather than paid for", () => {
-  const gate = new SpeechGate();
+  const gate = new SpeechGate({ silenceMs: 200, minUtteranceMs: 350 });
   gate.start(0);
   feed(gate, 0.001, 0, 1020);
   gate.feed(0.4, 1040); gate.feed(0.4, 1060);          // open, 20ms of sound
@@ -145,8 +145,9 @@ t("the budget stops instead of dropping", () => {
 // --- wav ------------------------------------------------------------------
 t("encodeWav writes a real RIFF header and the samples", () => {
   const wav = encodeWav([new Float32Array([0, 1, -1]), new Float32Array([0.5])], 48000);
-  const view = new DataView(wav);
-  const text = (at, len) => String.fromCharCode(...new Uint8Array(wav, at, len));
+  const view = new DataView(wav.buffer, wav.byteOffset, wav.byteLength);
+  const bytes = new Uint8Array(wav.buffer, wav.byteOffset, wav.byteLength);
+  const text = (at, len) => String.fromCharCode(...bytes.slice(at, at + len));
   assert.equal(text(0, 4), "RIFF");
   assert.equal(text(8, 4), "WAVE");
   assert.equal(text(12, 4), "fmt ");
@@ -160,7 +161,8 @@ t("encodeWav writes a real RIFF header and the samples", () => {
   assert.equal(view.getInt16(44 + 4, true), -32768, "-1.0 saturates low");
 });
 t("out of range samples clamp rather than wrap", () => {
-  const view = new DataView(encodeWav([new Float32Array([4, -4])], 16000));
+  const wav = encodeWav([new Float32Array([4, -4])], 16000);
+  const view = new DataView(wav.buffer, wav.byteOffset, wav.byteLength);
   assert.equal(view.getInt16(44, true), 32767);
   assert.equal(view.getInt16(46, true), -32768);
 });

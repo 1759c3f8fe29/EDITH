@@ -59,6 +59,8 @@ export type VoiceSettings = {
   ttsVoice: string;
   /** Sent with every transcription so the model is told rather than guessing. */
   inputLanguage: string;
+  /** Sent with every synthesis so the model is told rather than guessing. */
+  outputLanguage: string;
   wakeWord: string;
   wakeWordEnabled: boolean;
 };
@@ -68,6 +70,7 @@ export const VOICE_DEFAULTS: VoiceSettings = {
   ttsEnabled: false,
   ttsVoice: "",
   inputLanguage: "",
+  outputLanguage: "",
   wakeWord: "nexus",
   wakeWordEnabled: false,
 };
@@ -119,6 +122,7 @@ export function voiceSettingsOf(stored: Record<string, unknown>): VoiceSettings 
     ttsEnabled: asBool(stored.tts_enabled, VOICE_DEFAULTS.ttsEnabled),
     ttsVoice: asText(stored.tts_voice, VOICE_DEFAULTS.ttsVoice),
     inputLanguage: asText(stored.input_language, VOICE_DEFAULTS.inputLanguage),
+    outputLanguage: asText(stored.output_language, VOICE_DEFAULTS.outputLanguage),
     wakeWord: asText(stored.wake_word, VOICE_DEFAULTS.wakeWord).trim(),
     wakeWordEnabled: asBool(stored.wake_word_enabled, VOICE_DEFAULTS.wakeWordEnabled),
   };

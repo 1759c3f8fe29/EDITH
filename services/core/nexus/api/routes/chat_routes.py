@@ -282,6 +282,7 @@ async def chat(
     task_id: str | None = Body(None, embed=True),
     mode: str | None = Body(None, embed=True),
     job: str | None = Body(None, embed=True),
+    model: str | None = Body(None, embed=True),  # Direct model key to bypass router
     attachments: Any = Body(None, embed=True),
 ) -> StreamingResponse:
     """Run one turn and stream it.
@@ -327,6 +328,7 @@ async def chat(
                 "attachments": files,
                 "mode": mode,
                 "job": job,
+                "forced_model": model,  # Pass direct model to bypass router
             },
         ),
         name=f"turn:{conversation_id}",

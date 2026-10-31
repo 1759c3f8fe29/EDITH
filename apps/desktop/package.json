@@ -8,14 +8,23 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
     "typecheck": "tsc --noEmit",
     "test:wake": "tsc src/lib/wake.ts --target es2020 --module es2020 --outDir tests/.build --strict --types --skipLibCheck && mv tests/.build/wake.js tests/.build/wake.mjs && node tests/wake.check.mjs",
     "test:speech": "tsc src/lib/speech.ts --target es2020 --module es2020 --outDir tests/.build --strict --types --skipLibCheck && mv tests/.build/speech.js tests/.build/speech.mjs && node tests/speech.check.mjs",
-    "test:automations": "tsc src/lib/automations.ts --target es2020 --module es2020 --outDir tests/.build --strict --types --skipLibCheck && mv tests/.build/automations.js tests/.build/automations.mjs && node tests/automations.check.mjs"
+    "test:automations": "tsc src/lib/automations.ts --target es2020 --module es2020 --outDir tests/.build --strict --types --skipLibCheck && mv tests/.build/automations.js tests/.build/automations.mjs && node tests/automations.check.mjs",
+    "test:taskhud": "tsc src/lib/taskhud.ts --target es2020 --module es2020 --outDir tests/.build --strict --types --skipLibCheck && mv tests/.build/taskhud.js tests/.build/taskhud.mjs && node tests/taskhud.check.mjs"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/space-grotesk": "^5.3.0",
+    "@tauri-apps/api": "^2.12.3",
+    "@tauri-apps/cli": "^2.12.2",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "styled-jsx": "^5.1.7"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.13",

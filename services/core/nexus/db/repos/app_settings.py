@@ -54,6 +54,10 @@ DEFAULTS: dict[str, Any] = {
     # Handed to /api/voice/transcribe so the model is told the language instead of
     # guessing it. A wrong guess transliterates rather than transcribes.
     "input_language": "en",
+    # Handed to /api/voice/speak so the synthesis model is told the language instead of
+    # guessing it. A wrong guess would synthesise in the wrong language. Empty leaves the
+    # model to use its default.
+    "output_language": "",
     # Model routing (§13-§15)
     "router_mode": "auto",  # auto | pinned
     "pinned_provider": "",
@@ -152,13 +156,13 @@ DEFAULTS: dict[str, Any] = {
     # Awareness (§39, §47, §54). Every one of these defaults to off, or to the
     # cheapest honest setting: NEXUS watching the screen is a decision the user
     # makes, never a state it arrives in.
-    "monitor_enabled": False,
+    "monitor_enabled": True,
     "monitor_system_enabled": True,
     "monitor_system_interval_seconds": 60,
-    "monitor_window_enabled": False,
+    "monitor_window_enabled": True,
     "monitor_window_interval_seconds": 5,
-    "monitor_screen_enabled": False,
-    "monitor_screen_interval_seconds": 300,
+    "monitor_screen_enabled": True,
+    "monitor_screen_interval_seconds": 30,
     "monitor_screen_describe": False,
     # How much of the image must differ before "the screen changed". Only
     # meaningful when ImageMagick is installed; without it the comparison is an
@@ -167,8 +171,10 @@ DEFAULTS: dict[str, Any] = {
     # Frames kept on disk for comparison and for the timeline. Older ones are
     # deleted as they age out, and all of them when watching stops.
     "monitor_screen_keep_frames": 12,
-    "monitor_clipboard_enabled": False,
+    "monitor_clipboard_enabled": True,
     "monitor_clipboard_interval_seconds": 3,
+    # Idle detection threshold - seconds of no activity before user is considered idle
+    "monitor_idle_threshold_seconds": 300.0,
     # USB. Reads the kernel's device tree, not the contents of anything, so it is
     # the cheapest watcher here -- but still off by default, because "NEXUS tells
     # me what I plugged in" is a decision the user makes (§39).
@@ -195,13 +201,17 @@ DEFAULTS: dict[str, Any] = {
     # drive the live UI over the event bus but leave no history behind, which is
     # the right setting for someone who wants awareness without a record.
     "ambient_history_enabled": True,
-    "proactive_suggestions_enabled": False,
+    "proactive_suggestions_enabled": True,
     "proactive_quiet_hours": "22:00-08:00",
     # Memory (§16-§18)
     "memory_enabled": True,
     "memory_auto_propose": True,
     "memory_require_approval": True,
     "semantic_search_enabled": True,
+    # Continuous learning (§10, §13, §45). On by default: observing the user's
+    # explicit corrections and repeated preferences is what makes NEXUS adapt
+    # without being retrained. The processor checks this on every tick.
+    "learning_enabled": True,
     # Permissions (§5-§8)
     #
     # "trusted" means NEXUS acts without stopping to ask -- the assistant is

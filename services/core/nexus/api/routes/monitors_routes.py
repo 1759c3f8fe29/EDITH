@@ -184,3 +184,18 @@ def forget(
         "removed": removed,
         "message": f"{removed} observation(s) deleted." if removed else "There was nothing matching to delete.",
     }
+
+
+@router.get("/screen/frames")
+def screen_frames(request: Request) -> dict[str, Any]:
+    """Frames captured by the screen monitor, newest first.
+
+    Returns the frames currently on disk for the timeline view.
+    """
+    sup = _sup(request)
+    screen_monitor = sup.get("screen")
+    if screen_monitor is None:
+        return {"frames": [], "available": False, "reason": "Screen monitor not registered"}
+    if not screen_monitor.state.running:
+        return {"frames": [], "available": False, "reason": "Screen monitor not running"}
+    return {"frames": screen_monitor.frames(), "available": True}

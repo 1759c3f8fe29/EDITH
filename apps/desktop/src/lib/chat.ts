@@ -160,6 +160,7 @@ export type ChatInput = {
   taskId?: string | null;
   mode?: string | null;
   job?: string | null;
+  model?: string | null; // Direct model key to bypass router
   /** Base64 image data the user picked, or a path to an image NEXUS captured. */
   attachments?: Array<{ data: string; media_type: string } | { path: string }>;
 };
@@ -180,6 +181,7 @@ export function startTurn(input: ChatInput, handlers: ChatHandlers): { abort: ()
       task_id: input.taskId ?? null,
       mode: input.mode ?? null,
       job: input.job ?? null,
+      model: input.model ?? null,
       attachments: input.attachments ?? null,
     },
     handlers,

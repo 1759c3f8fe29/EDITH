@@ -4,7 +4,9 @@
  * A title bar naming where you are, a rail naming everywhere you can go, one screen,
  * the instruction bar, and one status line. The permission dialog sits above all of
  * it because it is the only thing in the product that must be answered before
- * anything else can proceed.
+ * anything else can proceed. The task HUD sits beside it, also above every screen:
+ * work keeps running while the user navigates, and the surface that says so must not
+ * be one of the things they navigated away from.
  *
  * Three things this file is responsible for and nothing else is:
  *
@@ -31,7 +33,8 @@
 import type { ReactElement } from "react";
 
 import { Icon } from "./components/Icon";
-import { ACCENTS, IconButton, type Accent } from "./components/primitives";
+import { TaskHud } from "./components/TaskHud";
+import { ACCENTS, IconButton, ProactiveToast, type Accent } from "./components/primitives";
 import { CommandBar } from "./shell/CommandBar";
 import { NavRail } from "./shell/NavRail";
 import { PanelBoundary } from "./shell/PanelBoundary";
@@ -52,10 +55,69 @@ import { ToolsScreen } from "./screens/ToolsScreen";
 import { VoiceScreen } from "./screens/VoiceScreen";
 import { useNexus } from "./state/nexus";
 import { SCREEN_BY_ID } from "./state/screens";
+import { api, type ToolResult } from "./lib/api";
+import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useState } from "react";
+import { useAmbientMonitor, type AmbientEvent } from "./lib/ambient";
+import { usePersonality, ListeningIndicator } from "./lib/personality";
 
 export function App() {
-  const { screen, focus, accent, setAccent, startup } = useNexus();
+  const { screen, focus, accent, setAccent, startup, proactiveSuggestions, dismissProactiveSuggestion, speakProactive } = useNexus();
+  const { state: personalityState } = usePersonality();
   const here = SCREEN_BY_ID[screen];
+  const [screenCaptureDone, setScreenCaptureDone] = useState(false);
+
+  // Capture screen on app launch (desktop only)
+  useEffect(() => {
+    if (!screenCaptureDone && typeof window !== "undefined") {
+      const capture = async () => {
+        try {
+          const result = await invoke("capture_screen", { target: "screen", delay_seconds: 0 });
+          console.log("Screen captured on startup:", result);
+        } catch (e) {
+          console.warn("Screen capture on startup failed (non-fatal):", e);
+        }
+        setScreenCaptureDone(true);
+      };
+      capture();
+    }
+  }, [screenCaptureDone]);
+
+  // Ambient monitor - continuous awareness with voice commentary
+  const getSpeakFn = () => async (text: string): Promise<void> => {
+    await speakProactive(text);
+    // speakProactive returns Promise<Speech | null>, but we just need Promise<void>
+  };
+  const handleAmbientObservation = (event: AmbientEvent) => {
+    // Log ambient events to console for now; could also add to activity feed
+    console.log("[ambient]", event.kind, event.summary, event.data);
+    // Refresh activity to show new observations
+    api.activity({ limit: 1 }).catch(() => {});
+  };
+  useAmbientMonitor(getSpeakFn, handleAmbientObservation);
+
+  const handleProactiveAct = (action: { tool: string; params: Record<string, unknown> }) => {
+    // Actually invoke the tool via the API
+    api.tools
+      .execute(action.tool, action.params)
+      .then((result: ToolResult) => {
+        // Show the tool result in a follow-up toast
+        const summary = result.ok
+          ? `✅ Tool succeeded: ${result.summary || "Done"}`
+          : `❌ Tool failed: ${result.error || "Unknown error"}`;
+
+        // For now, log to console. In a full implementation, this would show a follow-up toast
+        console.log("Proactive tool result:", summary, result);
+
+        // Could also add to activity feed or show a temporary notification
+        // Using the activity refresh as a signal
+        api.activity({ limit: 1 }).catch(() => {});
+      })
+      .catch((cause: unknown) => {
+        const error = cause instanceof Error ? cause.message : String(cause);
+        console.error("Proactive tool invocation failed:", error);
+      });
+  };
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-void text-ink">
@@ -79,6 +141,12 @@ export function App() {
               {startup.data.session_type.toUpperCase()}
             </span>
           )}
+          <ListeningIndicator
+            isListening={personalityState.isListening}
+            personalityId={personalityState.personality.id}
+            size="sm"
+            showLabel={false}
+          />
           <AccentPicker accent={accent} onPick={setAccent} />
           <IconButton
             name="refresh"
@@ -102,6 +170,27 @@ export function App() {
 
       <CommandBar conversationId={screen === "conversations" ? focus : null} />
       <StatusBar />
+      {/* Above every screen, like the permission dialog, and for the same reason:
+          a task started from the instruction bar keeps running while the user
+          navigates, and the one place they must not lose track of it is here. The
+          permission dialog is last so it stays on top of the HUD. */}
+      <TaskHud />
+      {/* Proactive suggestions toast - Ultron-level AI that speaks up unprompted */}
+      {proactiveSuggestions.length > 0 && (
+        <div className="fixed bottom-24 right-4 z-40 flex flex-col gap-2 max-w-sm pointer-events-none">
+          {proactiveSuggestions.map((suggestion) => (
+            <div key={suggestion.id} className="pointer-events-auto">
+              <ProactiveToast
+                suggestion={suggestion}
+                onDismiss={dismissProactiveSuggestion}
+                onAct={handleProactiveAct}
+                speakProactive={speakProactive}
+                personality={personalityState.personality}
+              />
+            </div>
+          ))}
+        </div>
+      )}
       <PermissionDialog />
     </div>
   );
@@ -150,19 +239,27 @@ function Screen(): ReactElement {
 /**
  * The accent switch (§52).
  *
- * Four swatches rather than a dropdown, because the choice *is* the colour and a menu
+ * Eight swatches rather than a dropdown, because the choice *is* the colour and a menu
  * of colour names is a worse way to pick one. Each carries its name as an accessible
  * label, so the control is not colour-only (§92).
  *
+ * The four additions (celestial, emerald, gold, rose) come from the reference
+ * interface's own theme list, and keep its names so the two projects name the same
+ * colour the same way.
+ *
  * The swatch colours are literals here, and that is not laziness. `--accent` is scoped
  * to `:root[data-accent=…]` in styles.css, so `var(--accent)` inside any child element
- * resolves to *the current theme* — all four swatches would paint the same colour and
- * the picker would show one option four times. Four literals matching the `@theme`
- * block is the only way to show four colours simultaneously without duplicating the
+ * resolves to *the current theme* — every swatch would paint the same colour and the
+ * picker would show one option eight times. Eight literals matching the `@theme`
+ * block is the only way to show eight colours simultaneously without duplicating the
  * whole token set onto a second selector.
  */
 const SWATCH: Record<Accent, string> = {
   cyan: "#22d3ee",
+  celestial: "#38bdf8",
+  emerald: "#10b981",
+  gold: "#eab308",
+  rose: "#f43f5e",
   crimson: "#ff3b4e",
   amber: "#ffa726",
   violet: "#a78bfa",

@@ -364,10 +364,12 @@ export function VoiceSphere({
       )}
 
       {/* The label is the state — text, not colour alone (§92, §55). `aria-live`
-          so a screen reader hears the transition rather than missing it. */}
+          so a screen reader hears the transition rather than missing it.
+          Set in the display face: this is the one string on the screen meant to
+          be read from across the room. */}
       <div className="flex flex-col items-center gap-1 text-center" role="status" aria-live="polite">
         <p
-          className="font-mono text-[13px] font-medium uppercase tracking-[0.22em]"
+          className="stage-caption text-[13px] font-medium uppercase tracking-[0.22em]"
           style={{ color: look.colour }}
         >
           {look.label}

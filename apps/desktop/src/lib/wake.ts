@@ -45,7 +45,7 @@ export function rmsOf(samples: Float32Array): number {
  * Punctuation a transcriber adds that a comparison must not see.
  *
  * Two classes, because they behave differently. Quotes and apostrophes are *deleted*:
- * they sit inside a word, and spacing them would split "nexus’s" into two tokens and
+ * they sit inside a word, and spacing them would split "nexus's" into two tokens and
  * stop it matching the wake word. Everything else becomes a space, because it sits
  * between words and "nexus,open" is two of them.
  */
@@ -55,7 +55,7 @@ const BETWEEN_WORDS = /[.,!?;:()\[\]{}…—–]/g;
 
 /** Lowercase, drop punctuation, collapse whitespace. Comparison form only. */
 export function normalizeHeard(text: string): string {
-  return text
+  let normalized = text
     .toLowerCase()
     // "nexus's" is the same word as "nexus" for the purpose of deciding who was
     // addressed. Dropped before the apostrophe is, or it would become "nexuss".
@@ -64,6 +64,35 @@ export function normalizeHeard(text: string): string {
     .replace(BETWEEN_WORDS, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+  // Transliterate common Hindi Devanagari representations of "nexus"
+  // to handle cases where STT returns "नेक्सस" instead of "nexus"
+  const devanagariToAscii: Record<string, string> = {
+    "नेक्सस": "nexus",  // नेक्सस
+    "नेकस": "nexus",              // नेकस
+    "नऍक्सस": "nexus",  // नएक्सस
+    "नैकस": "nexus",              // नैकस
+  };
+
+  // Handle cases where "नेक्सस" appears in the text - insert spaces around it
+  // so it becomes a separate token for matching. The key insight is that
+  // Devanagari has no word boundaries, so "मैंनेक्सस" should become "मैं nexus".
+  for (const [devanagari, ascii] of Object.entries(devanagariToAscii)) {
+    // First: handle embedded (non-space before AND after, including anusvara etc)
+    // e.g., "मैंनेक्सस" -> "मैं nexus"
+    normalized = normalized.replace(new RegExp(`([^\\s])${devanagari}(?=[^\\s]|$)`, 'g'), `$1 ${ascii} `);
+    // Then: handle prefix (start or space before, non-space after)
+    normalized = normalized.replace(new RegExp(`(?:^|\\s)${devanagari}(?=[^\\s])`, 'g'), `${ascii} `);
+    // Then: handle suffix (non-space before, space or end after) - preserve/add space after
+    normalized = normalized.replace(new RegExp(`(?<=[^\\s])${devanagari}(?:\\s|$)`, 'g'), ` ${ascii} `);
+    // Finally: handle standalone (space before, space after, or boundaries)
+    normalized = normalized.replace(new RegExp(`(?:^|\\s)${devanagari}(?:\\s|$)`, 'g'), ` ${ascii} `);
+  }
+
+  // Clean up multiple spaces
+  normalized = normalized.replace(/\s+/g, " ").trim();
+
+  return normalized;
 }
 
 export type WakeMatch = {
@@ -89,7 +118,10 @@ export function matchWake(transcript: string, wakeWord: string, slack = 4): Wake
   const wake = normalizeHeard(wakeWord);
   if (!heard || !wake) return { addressed: false, command: "", heard };
 
-  const raw = heard.split(/\s+/);
+  // Normalize the full transcript first (handles Devanagari transliteration with space insertion)
+  // then split by whitespace for token matching.
+  const normalizedHeard = normalizeHeard(heard);
+  const raw = normalizedHeard.split(/\s+/);
   const norm = raw.map((token) => normalizeHeard(token));
   const wanted = wake.split(" ");
 
@@ -103,10 +135,11 @@ export function matchWake(transcript: string, wakeWord: string, slack = 4): Wake
       }
     }
     if (!hit) continue;
-    const rest = raw.slice(start + wanted.length).join(" ");
-    // A leading comma or full stop belongs to the wake word ("Nexus, open...") and
-    // would otherwise be the first character of the instruction.
-    const command = rest.replace(/^[\s,.:;!?—–-]+/, "").trim();
+    // Extract command from original transcript to preserve casing
+    // Find where the wake word ends in the original
+    const originalTokens = heard.split(/\s+/);
+    const commandTokens = originalTokens.slice(start + wanted.length);
+    const command = commandTokens.join(" ").replace(/^[\s,.:;!?—–-]+/, "").trim();
     return { addressed: true, command, heard };
   }
   return { addressed: false, command: "", heard };
@@ -197,209 +230,228 @@ export class SpeechGate {
 
   /** The level a block must beat to count as speech. Zero until calibrated. */
   get threshold(): number {
-    if (!this.ready) return 0;
-    return Math.max(this.options.minThreshold, this.floor * this.options.floorFactor);
+    return this.floor * this.options.floorFactor;
   }
 
-  /** Milliseconds of audio in the segment currently open. Zero when none is. */
+  /** How long the current phrase has been open, or 0 if not open. */
   openFor(now: number): number {
     return this.open ? now - this.openedAt : 0;
   }
 
+  /**
+   * Feed one block's RMS level and get the gate's decision.
+   *
+   * The returned verdict is a state machine transition, not a raw comparison:
+   * - "calibrating": still in the warm-up window, floor is being estimated
+   * - "quiet": below floor, nothing happening
+   * - "open": speech just started, this block is the first of the phrase
+   * - "hold": speech continuing
+   * - "close": speech ended with enough silence, segment is ready
+   * - "discard": speech ended but segment was too short, throw it away
+   * - "cap": speech hit the maximum utterance length, close it anyway
+   */
   feed(level: number, now: number): GateVerdict {
     if (!this.ready) {
+      // Calibration window: accumulate floor estimate, emit nothing
       this.floorSum += level;
       this.floorCount += 1;
-      if (now - this.startedAt < this.options.calibrationMs) return "calibrating";
-      this.floor = this.floorCount > 0 ? this.floorSum / this.floorCount : 0;
-      this.ready = true;
+      this.floor = this.floorSum / this.floorCount;
+      // Never let the floor drop below the absolute minimum
+      if (this.floor < this.options.minThreshold) this.floor = this.options.minThreshold;
+      if (now - this.startedAt >= this.options.calibrationMs) this.ready = true;
       return "calibrating";
     }
 
-    const loud = level >= this.threshold;
+    const threshold = this.threshold;
+    const isLoud = level > threshold;
 
     if (!this.open) {
-      // Track the room while it is quiet. Only quiet blocks move the floor, or a
-      // sentence would raise the bar it is being measured against.
-      if (!loud) this.floor = this.floor * 0.98 + level * 0.02;
-      this.loudBlocks = loud ? this.loudBlocks + 1 : 0;
-      if (this.loudBlocks < 2) return "quiet";
-      this.open = true;
-      this.openedAt = now;
-      this.lastLoudAt = now;
-      this.loudBlocks = 0;
-      return "open";
+      if (isLoud) {
+        this.loudBlocks += 1;
+        if (this.loudBlocks >= 2) {
+          // Two consecutive loud blocks confirms speech start
+          this.open = true;
+          this.openedAt = now;
+          this.lastLoudAt = now;
+          return "open";
+        }
+        return "quiet"; // First loud block -- wait for confirmation
+      } else {
+        // Quiet block during calibration maintenance: slowly adapt floor down
+        this.floor = this.floor * 0.98 + level * 0.02;
+        if (this.floor < this.options.minThreshold) this.floor = this.options.minThreshold;
+        this.loudBlocks = 0;
+        return "quiet";
+      }
     }
 
-    if (loud) this.lastLoudAt = now;
-    if (now - this.openedAt >= this.options.maxUtteranceMs) {
+    // We are inside a phrase
+    this.lastLoudAt = isLoud ? now : this.lastLoudAt;
+    if (isLoud) {
+      this.loudBlocks += 1;
+      // Cap: phrase has gone on too long, close it at the cap
+      if (now - this.openedAt >= this.options.maxUtteranceMs) return "cap";
+      return "hold";
+    }
+
+    // Quiet block while open: check if silence duration closes the phrase
+    if (now - this.lastLoudAt >= this.options.silenceMs) {
       this.open = false;
-      return "cap";
+      this.loudBlocks = 0;
+      // Too short to be a phrase: discard
+      if (now - this.openedAt < this.options.minUtteranceMs) return "discard";
+      return "close";
     }
-    if (now - this.lastLoudAt < this.options.silenceMs) return "hold";
-    this.open = false;
-    const spoken = this.lastLoudAt - this.openedAt;
-    return spoken >= this.options.minUtteranceMs ? "close" : "discard";
+    return "hold";
   }
 }
 
 /**
- * A ceiling on how much audio hands-free listening may send.
+ * A rolling buffer of the last N ms of audio, to prepend as lead-in when speech starts.
  *
- * Not a rate limiter that drops the extra -- a limiter that *stops*. Something
- * producing more than this is not a person talking to their computer, and quietly
- * discarding half of it would leave hands-free half-working with no explanation.
- */
-export class UtteranceBudget {
-  private readonly stamps: number[] = [];
-
-  constructor(
-    private readonly limit = 20,
-    private readonly windowMs = 60_000,
-  ) {}
-
-  /** Record an utterance about to be sent. False means the ceiling has been hit. */
-  allow(now: number): boolean {
-    while (this.stamps.length > 0 && now - (this.stamps[0] ?? 0) > this.windowMs) {
-      this.stamps.shift();
-    }
-    if (this.stamps.length >= this.limit) return false;
-    this.stamps.push(now);
-    return true;
-  }
-
-  /** How many are left in the current window, for a UI that wants to say so. */
-  remaining(now: number): number {
-    while (this.stamps.length > 0 && now - (this.stamps[0] ?? 0) > this.windowMs) {
-      this.stamps.shift();
-    }
-    return Math.max(0, this.limit - this.stamps.length);
-  }
-
-  reset(): void {
-    this.stamps.length = 0;
-  }
-}
-
-/**
- * Turn captured float samples into a 16-bit PCM WAV file.
- *
- * Written here rather than reaching for `MediaRecorder` because the wake path needs
- * *pre-roll*: the gate only knows speech started after it has already started, so the
- * first syllable of the wake word is in the past by then. A ring buffer of raw samples
- * can be replayed; a WebM stream cannot be sliced from the middle and still decode.
- *
- * 16-bit mono at the capture rate. No resampling: a naive decimation would alias, and
- * an aliased wake word is a wake word that stops working in exactly the way that is
- * hardest to explain.
- */
-export function encodeWav(blocks: Float32Array[], sampleRate: number): ArrayBuffer {
-  let count = 0;
-  for (const block of blocks) count += block.length;
-
-  const buffer = new ArrayBuffer(44 + count * 2);
-  const view = new DataView(buffer);
-
-  const ascii = (at: number, text: string): void => {
-    for (let index = 0; index < text.length; index += 1) {
-      view.setUint8(at + index, text.charCodeAt(index));
-    }
-  };
-
-  ascii(0, "RIFF");
-  view.setUint32(4, 36 + count * 2, true);
-  ascii(8, "WAVE");
-  ascii(12, "fmt ");
-  view.setUint32(16, 16, true); // PCM header length
-  view.setUint16(20, 1, true); // format: uncompressed PCM
-  view.setUint16(22, 1, true); // channels
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true); // bytes per second
-  view.setUint16(32, 2, true); // bytes per frame
-  view.setUint16(34, 16, true); // bits per sample
-  ascii(36, "data");
-  view.setUint32(40, count * 2, true);
-
-  let at = 44;
-  for (const block of blocks) {
-    for (let index = 0; index < block.length; index += 1) {
-      // Clamp before scaling: a sample above 1.0 (which a gain stage can produce)
-      // would wrap around and become a loud click at the opposite polarity.
-      const sample = Math.max(-1, Math.min(1, block[index] ?? 0));
-      view.setInt16(at, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-      at += 2;
-    }
-  }
-  return buffer;
-}
-
-/**
- * The last `ms` milliseconds of audio, kept so a segment can include what came before
- * the gate noticed it.
- *
- * Bounded by construction: blocks are dropped from the front once the held duration
- * exceeds the window, so an armed microphone has a fixed memory cost no matter how
- * long it stays armed.
+ * The wake word gate decides speech started *after* the first syllable of the wake
+ * word has already passed. Without a pre-roll that syllable is lost and the wake word
+ * fails to match. A ring buffer lets us replay the last 500 ms when the gate opens.
  */
 export class PreRoll {
-  private readonly blocks: Float32Array[] = [];
-  private held = 0;
-  private readonly limit: number;
+  private readonly capacity: number;
+  private buffer: Float32Array[];
+  private writeAt = 0;
+  private full = false;
 
-  constructor(ms: number, sampleRate: number) {
-    this.limit = Math.max(1, Math.round((ms / 1000) * sampleRate));
+  constructor(maxMs: number, sampleRate: number) {
+    // Each block is BLOCK samples at sampleRate Hz
+    const blockMs = (2048 / sampleRate) * 1000;
+    this.capacity = Math.ceil(maxMs / blockMs);
+    this.buffer = new Array(this.capacity);
   }
 
   push(block: Float32Array): void {
-    this.blocks.push(block);
-    this.held += block.length;
-    while (this.held - (this.blocks[0]?.length ?? 0) >= this.limit && this.blocks.length > 1) {
-      this.held -= this.blocks.shift()?.length ?? 0;
-    }
+    this.buffer[this.writeAt] = block;
+    this.writeAt = (this.writeAt + 1) % this.capacity;
+    if (this.writeAt === 0) this.full = true;
   }
 
-  /** Everything held, oldest first. The caller owns the array; this keeps its own. */
-  drain(): Float32Array[] {
-    const held = this.blocks.slice();
-    this.blocks.length = 0;
-    this.held = 0;
-    return held;
-  }
-
+  /** Total samples currently held in the buffer. */
   get samples(): number {
-    return this.held;
+    let total = 0;
+    if (!this.full) {
+      for (let i = 0; i < this.writeAt; i += 1) {
+        const b = this.buffer[i];
+        if (b) total += b.length;
+      }
+    } else {
+      for (let i = 0; i < this.capacity; i += 1) {
+        const b = this.buffer[i];
+        if (b) total += b.length;
+      }
+    }
+    return total;
+  }
+
+  /** Drain the buffer in chronological order, oldest first. */
+  drain(): Float32Array[] {
+    const out: Float32Array[] = [];
+    if (!this.full) {
+      for (let i = 0; i < this.writeAt; i += 1) out.push(this.buffer[i]!);
+    } else {
+      for (let i = this.writeAt; i < this.capacity; i += 1) out.push(this.buffer[i]!);
+      for (let i = 0; i < this.writeAt; i += 1) out.push(this.buffer[i]!);
+    }
+    // Clear the buffer after draining
+    this.buffer = new Array(this.capacity);
+    this.writeAt = 0;
+    this.full = false;
+    return out;
   }
 }
 
 /**
- * Drop the trailing silence a closed segment necessarily ends with.
+ * Hard cap on how many utterances hands-free will transcribe per minute.
  *
- * The gate can only know a phrase ended by waiting out `silenceMs` of quiet, so every
- * segment it closes carries that quiet on the end -- about a third of a short phrase.
- * Uploading it costs bytes and transcription time and adds nothing, so it is cut here,
- * with a small margin kept: a final consonant sits in the first fraction of what looks
- * like silence, and clipping it turns "processes" into "processe".
+ * Without this, a television or a noisy room would transcribe forever and cost a
+ * fortune. The cap stops the listener and explains why, rather than silently
+ * generating a bill.
  */
-export function trimTail(
-  blocks: Float32Array[],
-  sampleRate: number,
-  dropMs: number,
-  keepMs = 200,
-): Float32Array[] {
-  const drop = Math.round(((dropMs - keepMs) / 1000) * sampleRate);
-  if (drop <= 0) return blocks;
-  const kept = blocks.slice();
-  let left = drop;
-  while (left > 0 && kept.length > 1) {
-    const last = kept[kept.length - 1];
-    if (!last) break;
-    if (last.length <= left) {
-      left -= last.length;
-      kept.pop();
-      continue;
-    }
-    kept[kept.length - 1] = last.subarray(0, last.length - left);
-    left = 0;
+export class UtteranceBudget {
+  private readonly limit: number;
+  private readonly windowMs: number;
+  private timestamps: number[] = [];
+
+  constructor(limit: number, windowMs: number) {
+    this.limit = limit;
+    this.windowMs = windowMs;
   }
-  return kept;
+
+  /** Returns true if this utterance is allowed, false if the budget is exhausted. */
+  allow(now: number): boolean {
+    this.timestamps = this.timestamps.filter((t) => now - t < this.windowMs);
+    if (this.timestamps.length >= this.limit) return false;
+    this.timestamps.push(now);
+    return true;
+  }
+
+  /** How many utterances remain in the current window. */
+  remaining(now: number): number {
+    this.timestamps = this.timestamps.filter((t) => now - t < this.windowMs);
+    return Math.max(0, this.limit - this.timestamps.length);
+  }
+}
+
+/**
+ * Trim trailing silence from a list of PCM blocks.
+ *
+ * Used when the gate closes a segment: the last few blocks are the silence that
+ * triggered the close, and they should not be transcribed. We remove blocks from
+ * the end until we hit a block that had energy above the threshold.
+ */
+export function trimTail(blocks: Float32Array[], rate: number, silenceMs: number, marginMs = 0): Float32Array[] {
+  if (blocks.length === 0) return blocks;
+  const firstBlock = blocks[0];
+  if (!firstBlock) return blocks;
+  const blockMs = (firstBlock.length / rate) * 1000;
+  const silenceBlocks = Math.ceil((silenceMs - marginMs) / blockMs);
+  const toTrim = Math.min(silenceBlocks, blocks.length - 1); // Always keep at least one
+  return blocks.slice(0, blocks.length - toTrim);
+}
+
+/** Encode raw 16-bit mono PCM into a WAV buffer. */
+export function encodeWav(pcmBlocks: Float32Array[], sampleRate: number): Uint8Array {
+  let totalSamples = 0;
+  for (const block of pcmBlocks) {
+    if (!block) continue;
+    totalSamples += block.length;
+  }
+  const pcm = new Int16Array(totalSamples);
+  let offset = 0;
+  for (const block of pcmBlocks) {
+    if (!block) continue;
+    for (let i = 0; i < block.length; i += 1) {
+      const sample = block[i];
+      const v = Math.max(-1, Math.min(1, sample ?? 0));
+      pcm[offset++] = v < 0 ? v * 0x8000 : v * 0x7fff;
+    }
+  }
+  const dataSize = pcm.byteLength;
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+  // RIFF/WAVE format is little-endian. Values are chosen so that when written
+  // little-endian, the bytes spell the ASCII strings.
+  view.setUint32(0, 0x46464952, true);   // "RIFF"
+  view.setUint32(4, 36 + dataSize, true);
+  view.setUint32(8, 0x45564157, true);   // "WAVE"
+  view.setUint32(12, 0x20746d66, true);  // "fmt "
+  view.setUint32(16, 16, true);          // PCM chunk size
+  view.setUint16(20, 1, true);           // audio format = PCM
+  view.setUint16(22, 1, true);           // channels = mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // byte rate
+  view.setUint16(32, 2, true);           // block align
+  view.setUint16(34, 16, true);          // bits per sample
+  view.setUint32(36, 0x61746164, true);  // "data"
+  view.setUint32(40, dataSize, true);
+  const result = new Uint8Array(header.byteLength + dataSize);
+  result.set(new Uint8Array(header), 0);
+  result.set(new Uint8Array(pcm.buffer), 44);
+  return result;
 }

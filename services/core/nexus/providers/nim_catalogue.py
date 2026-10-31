@@ -397,31 +397,28 @@ CHAT_MODELS: tuple[ModelSpec, ...] = (
         notes=_CATALOGUE_CAVEAT,
     ),
     # ------------------------------------------------------------------
-    # Listed by NVIDIA, asked for by the user, and **not serving on this
-    # key** as of 2026-10-04. Recorded here rather than left out, because
-    # "absent from the catalogue" and "present but unreachable" are
-    # different facts and only one of them is true.
+    # Both GLM entries were recorded here on 2026-10-04 as "not serving on this
+    # key": listed by `/v1/models`, but no response within 150 s and no first
+    # streamed byte within 420 s. **Re-measured 2026-10-11 and both answer.**
     #
-    # Measured: ``GET /v1/models`` names all three. A non-streaming chat
-    # call returns no response headers at all within 150 s; a streaming
-    # call returns no first byte within 420 s. That is not a cold start
-    # (the slowest alive model on this key answers in 23 s) and it is not
-    # a refusal -- there is no 404, no 410 and no 401 to read. It is the
-    # third state NVIDIA has: listed, deployed, and not scheduled for this
-    # account.
+    # The earlier reading was not wrong, it was incomplete, and the difference is
+    # worth keeping because the same thing will happen to whoever reads this next.
+    # The probe used a 24-token output budget. These models emit `reasoning_content`
+    # *before* `content`, so 24 tokens was entirely consumed by thinking:
+    # `finish_reason` came back `length` with an empty `content`, which reads exactly
+    # like a model that never answered. At a 400-token budget both reply properly.
+    # A probe that is too small to see an answer is not evidence of absence, and the
+    # first version of this note drew that conclusion too confidently.
     #
-    # They are deliberately in **no chain**. A hanging candidate at a chain
-    # head costs the user their whole latency budget to learn nothing, which
-    # is worse than a model that is honestly absent. They are here so that
-    # (a) the Models screen can name them, (b) the user can pin one the
-    # moment the key is entitled, and (c) ``nexus.learning`` will promote
-    # them on measured reward if they start answering -- which is exactly
-    # the case the bandit was built for.
+    # Measured warm, one sentence, same prompt:
     #
-    # ``latency`` is "slow" on the same principle the retired V4 Pro entry
-    # used: guessing "fast" would spend a user's urgency budget on an
-    # unknown, and guessing "slow" only costs the model work it was never
-    # the right answer for.
+    #     z-ai/glm-5.3-flash     0.8 s   (cold 4.0 s)
+    #     z-ai/glm-5.3          21.0 s
+    #
+    # Flash is a genuine fast model and is a legitimate `fast`-chain candidate. The
+    # large one is `slow` by measurement, not by guess, so the router will only
+    # reach for it when urgency is low -- which is the correct treatment for a model
+    # that takes twenty seconds to say one word.
     ModelSpec(
         id="z-ai/glm-5.3",
         provider="nvidia",
@@ -431,7 +428,14 @@ CHAT_MODELS: tuple[ModelSpec, ...] = (
         strengths=("reasoning", "coding", "instruction_following"),
         latency="slow",
         free=True,
-        notes=_UNRESPONSIVE_CAVEAT,
+        notes=(
+            "Measured alive 2026-10-11: ~21 s warm for a one-word reply. Genuinely "
+            "slow rather than unreachable -- the earlier 'no response' note came "
+            "from a probe whose output budget was too small to see the answer, "
+            "because this model emits reasoning before content. Emits "
+            "`reasoning_content` separately; a caller must allow for that or it "
+            "will read a working model as an empty one."
+        ),
     ),
     ModelSpec(
         id="z-ai/glm-5.3-flash",
@@ -440,9 +444,15 @@ CHAT_MODELS: tuple[ModelSpec, ...] = (
         context_window=128_000,
         max_output_tokens=16_384,
         strengths=("fast", "reasoning", "coding"),
-        latency="slow",
+        latency="fast",
         free=True,
-        notes=_UNRESPONSIVE_CAVEAT,
+        notes=(
+            "Measured alive 2026-10-11: 0.85 s warm, 4.0 s cold. A real fast model "
+            "and the useful half of this pair. Like its larger sibling it emits "
+            "`reasoning_content` before `content`, so a small `max_tokens` yields an "
+            "empty reply with `finish_reason=length` -- allocate for the reasoning "
+            "or the answer is truncated away."
+        ),
     ),
     ModelSpec(
         id="deepseek-ai/deepseek-v4.1-flash",

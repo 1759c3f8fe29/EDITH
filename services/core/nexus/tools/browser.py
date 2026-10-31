@@ -287,6 +287,9 @@ def _verify_open(params: dict[str, Any], result: ToolResult) -> tuple[bool, str]
     idempotent=False,
     verifier=_verify_open,
     requires=("xdg-open",),
+    voice_start="Opening {url} in your browser",
+    voice_timeout="The browser is taking too long to open. Trying again.",
+    voice_error="Could not open the browser.",
     parameters={
         "type": "object",
         "properties": {

@@ -90,6 +90,9 @@ def _digest(path: Path) -> str | None:
     ),
     capability="file.list",
     read_only=True,
+    voice_start="Listing files in {path}",
+    voice_timeout="Listing files is taking too long.",
+    voice_error="Could not list the files.",
     parameters={
         "type": "object",
         "properties": {
@@ -162,6 +165,9 @@ def files_list(params: dict[str, Any]) -> ToolResult:
     ),
     capability="file.read",
     read_only=True,
+    voice_start="Reading {path}",
+    voice_timeout="Reading the file is taking too long.",
+    voice_error="Could not read the file.",
     parameters={
         "type": "object",
         "properties": {
@@ -253,6 +259,9 @@ def _verify_write(params: dict[str, Any], result: ToolResult) -> tuple[bool, str
     capability="file.write",
     idempotent=False,
     verifier=_verify_write,
+    voice_start="Writing to {path}",
+    voice_timeout="Writing the file is taking too long.",
+    voice_error="Could not write the file.",
     parameters={
         "type": "object",
         "properties": {

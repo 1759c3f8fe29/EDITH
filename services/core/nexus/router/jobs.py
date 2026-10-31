@@ -245,6 +245,12 @@ JOBS: tuple[JobSpec, ...] = (
             # the NVIDIA second slot: measured alive at 1.9 s, and small enough that
             # it belongs on a chain whose whole purpose is speed.
             "nvidia:nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+            # 2026-10-11: GLM 5.3 Flash, measured 0.85 s warm -- a genuine fast
+            # model, and free. Third rather than first because its sibling takes
+            # twenty seconds and the *pair* has to be treated with care: a chain
+            # that reached the slow one by accident would stall a job whose entire
+            # purpose is not stalling. This model is the safe half.
+            "nvidia:z-ai/glm-5.3-flash",
             "mistral:mistral-small-latest",
             "openai:gpt-4o-mini",
         ),
@@ -358,12 +364,21 @@ JOBS: tuple[JobSpec, ...] = (
         title="Hearing",
         description="Turning recorded speech into text, in any language.",
         transport="media",
-        # Parakeet takes arbitrary BCP-47 tags -- it reports its language set as a
-        # pattern rather than a list -- so it is the multilingual head. Voxtral
-        # follows as the cross-provider fallback; voxtral-small is deliberately
-        # absent, since /audio/transcriptions rejects it as invalid_model and a
-        # candidate that can only fail is not a fallback.
+        # Re-ordered 2026-10-09 on a measurement rather than a preference. Measured
+        # on this machine, same sentence, same audio:
+        #
+        #     groq   whisper-large-v3-turbo    0.55 s
+        #     nvidia parakeet-1-1b-rnnt       7.87 s
+        #
+        # Fourteen times faster for an identical transcript. The NVIDIA model stays
+        # as the cross-provider fallback and is genuinely stronger on some axes --
+        # Parakeet takes arbitrary BCP-47 tags and reports its language set as a
+        # pattern rather than a list, so it covers languages Whisper does not -- but
+        # it is not the model to reach for first when the user is waiting to be
+        # heard. Voxtral remains last: a third provider on a third wire, which is
+        # what survives both the others being unreachable at once.
         chain=(
+            "groq:whisper-large-v3-turbo",
             "nvidia:nvidia/parakeet-1-1b-rnnt-multilingual-asr",
             "mistral:voxtral-mini-latest",
         ),

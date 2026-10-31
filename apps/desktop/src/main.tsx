@@ -23,10 +23,27 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
+// The three faces the token layer names. Bundled rather than linked from Google
+// Fonts (which is what the reference does) because this ships as a desktop app
+// that must render correctly with no network -- under file:// a webfont link is
+// simply a font that never arrives, and the app falls back to DejaVu in silence.
+// Before these imports the declared stack named Inter and JetBrains Mono while
+// neither was installed on this machine, so every "monospace label" in the
+// design was rendering in DejaVu Sans Mono.
+import "@fontsource-variable/inter";
+import "@fontsource/space-grotesk/500.css";
+import "@fontsource/space-grotesk/600.css";
+import "@fontsource/space-grotesk/700.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
+import "@fontsource/jetbrains-mono/600.css";
+
 import { App } from "./App";
 import { NexusProvider } from "./state/nexus";
 import { TurnProvider } from "./state/turn";
 import { VoiceProvider } from "./state/voice";
+// Initialize desktop ambient monitoring (must be before ambient.ts is used)
+import "./lib/ambient.desktop";
 import "./styles.css";
 
 const host = document.getElementById("root");

@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from ..logging_setup import get_logger
-from . import mistral_audio, nvidia_speech
+from . import groq_audio, mistral_audio, nvidia_speech
 from .base import ProviderError
 from .nim_media import Speech, Transcript
 
@@ -42,13 +42,49 @@ log = get_logger("providers.speech")
 _PROVIDERS: dict[str, Any] = {
     "nvidia": nvidia_speech,
     "mistral": mistral_audio,
+    # Speech-to-text only: Groq has no synthesis endpoint. It is in this table
+    # because the door should be able to name every provider that does *any* part
+    # of speech, and each entry declares which parts it does -- see `_SURFACES`.
+    # Leaving it out would make the router's own choice (`groq:whisper-...`)
+    # unrepresentable here, which is the silent-substitution shape this module was
+    # written to prevent.
+    "groq": groq_audio,
 }
+
+#: Which halves of speech each provider can serve. Asked rather than inferred from
+#: a missing attribute, so ``synthesize`` on a hearing-only provider fails with a
+#: sentence instead of an ``AttributeError`` from inside a client.
+#:
+#: Groq is the case that made this explicit: it is the fastest *hearing* measured
+#: on this machine and has no voice at all, so "is a speech provider" and "can
+#: speak" stopped being the same question.
+_SURFACES: dict[str, frozenset[str]] = {
+    "nvidia": frozenset({"hear", "speak"}),
+    "mistral": frozenset({"hear", "speak"}),
+    "groq": frozenset({"hear"}),
+}
+
+
+def surfaces(provider_id: str) -> frozenset[str]:
+    """Which halves of speech this provider serves: a subset of {"hear", "speak"}."""
+    return _SURFACES.get(provider_id, frozenset())
 
 
 class NoSpeechProvider(ProviderError):
     """The decision named a provider that does not do speech."""
 
     kind = "no_speech_provider"
+    retryable = False
+
+
+class CannotSpeak(ProviderError):
+    """The provider hears but has no voice. Distinct from not doing speech at all.
+
+    Kept separate because the fixes differ: "pick another model for this job" versus
+    "this provider cannot do this job, so the chain must not offer it here".
+    """
+
+    kind = "cannot_speak"
     retryable = False
 
 
@@ -156,6 +192,15 @@ async def synthesize(
     ``TypeError`` at the call site rather than a better answer.
     """
     module = provider_for(provider_id)
+    if "speak" not in surfaces(provider_id):
+        # Groq's case: it is a real speech provider with no voice. Saying so beats
+        # an AttributeError from inside a client that has no `synthesize`.
+        raise CannotSpeak(
+            f"{provider_id} does not do text-to-speech -- it only transcribes. "
+            "Choose a speaking model in Settings -> Models.",
+            provider=provider_id,
+            model=model,
+        )
     if module is nvidia_speech:
         return await module.client().synthesize(
             text, model=model, voice=voice, language=language

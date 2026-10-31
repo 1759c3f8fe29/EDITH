@@ -54,11 +54,13 @@ from fastapi.responses import FileResponse, StreamingResponse
 from .. import sse, turns
 from ...ai import persona, voice_stream
 from ...config import settings
+from ...core.events import bus
 from ...db.repos import app_settings
 from ...logging_setup import get_logger
 from ...providers import speech as speech_provider
 from ...providers.base import ProviderError
 from ...router import NoModelAvailable, resolve as resolve_job
+from ...tools.language_detect import detect_language_from_text, get_tts_language, get_stt_language
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
 log = get_logger("api.voice")
@@ -180,7 +182,8 @@ async def transcribe(
     model produced it, not just that "voice" failed.
 
     The language is the caller's if it sent one, otherwise the ``input_language``
-    setting. Passing it matters: the model guesses otherwise, and a guess is what
+    setting. If neither is set, auto-detect from the transcript after transcription.
+    Passing it matters: the model guesses otherwise, and a guess is what
     turns an English sentence into transliterated nonsense.
     """
     decision = _resolved("stt")
@@ -215,7 +218,13 @@ async def transcribe(
             "empty": True,
             "message": "No speech was found in that recording.",
         }
-    return {**transcript.to_dict(), "routed": decision.key, "empty": False}
+
+    # Auto-detect language from transcript if not provided
+    detected_language = spoken
+    if not detected_language:
+        detected_language = detect_language_from_text(transcript.text)
+
+    return {**transcript.to_dict(), "routed": decision.key, "empty": False, "detected_language": detected_language}
 
 
 @router.post("/speak")
@@ -237,9 +246,9 @@ async def speak(
     changes what the user hears. A stored voice belonging to a *different* provider
     is ignored rather than sent: see ``providers.speech.voice_for``.
 
-    The language is the caller's, else ``output_language``, else the provider's
-    default. It is what makes synthesis multilingual: Magpie speaks twelve
-    languages from one voice, chosen by this parameter.
+    The language is the caller's, else ``output_language``, else auto-detected from
+    the text, else the provider's default. It is what makes synthesis multilingual:
+    Magpie speaks twelve languages from one voice, chosen by this parameter.
     """
     if not text.strip():
         raise HTTPException(status_code=400, detail="There is no text to speak.")
@@ -260,6 +269,11 @@ async def speak(
     spoken = (language or "").strip() or str(
         app_settings.get("output_language", "") or ""
     ).strip()
+    # Auto-detect language from text if not provided
+    if not spoken:
+        spoken = detect_language_from_text(text)
+    # Convert to best TTS language
+    spoken = get_tts_language(spoken)
     try:
         speech = await speech_provider.synthesize(
             text,
@@ -278,6 +292,7 @@ async def speak(
         "routed": decision.key,
         "voice": chosen or speech_provider.default_voice(decision.provider_id),
         "language": spoken or None,
+        "detected_language": spoken if not language else None,
     }
 
 
@@ -366,7 +381,17 @@ async def _hear(data: bytes, language: str | None) -> tuple[str, dict[str, Any]]
     if not text:
         # Nothing was said. Answering anyway would mean inventing the question.
         raise HTTPException(status_code=400, detail="No speech was found in that recording.")
-    return text, {"type": "heard", "text": text, "routed": decision.key}
+
+    # Auto-detect language from transcript if not provided
+    detected_language = spoken
+    if not detected_language:
+        detected_language = detect_language_from_text(text)
+
+    heard_event = {"type": "heard", "text": text, "routed": decision.key}
+    if detected_language:
+        heard_event["detected_language"] = detected_language
+
+    return text, heard_event
 
 
 async def _drive(
@@ -406,6 +431,7 @@ async def converse(
     mode: str | None = Body(None, embed=True),
     voice: str | None = Body(None, embed=True),
     speak: bool = Body(True, embed=True),
+    model: str | None = Body(None, embed=True),  # Direct model key to bypass router
 ) -> StreamingResponse:
     """Hear, think and speak in one request, streamed as it happens.
 
@@ -466,6 +492,7 @@ async def converse(
                 "voice": voice,
                 "speak": speak,
                 "mode": mode,
+                "forced_model": model,  # Pass direct model to bypass router
             },
             gone,
         ),

@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # regenerable and the user should be able to delete all of it without losing
     # conversations or memory.
     audio_dir: Path = CACHE_DIR / "audio"
+    # Where generated documents land when the model does not name a path. In the
+    # user's own Documents tree on purpose: a report is something they keep, not
+    # a cache entry they will clear -- the opposite of audio_dir for that reason.
+    documents_dir: Path = HOME / "Documents" / "NEXUS"
 
     # Tool execution guards. Deliberately conservative defaults; the permission
     # engine is the authority, these are the blast-radius limits.
@@ -76,6 +80,7 @@ def settings() -> Settings:
 def ensure_dirs() -> None:
     """Create the directories NEXUS writes to. Safe to call repeatedly."""
     s = settings()
-    for path in (DATA_DIR, CONFIG_DIR, CACHE_DIR, STATE_DIR, s.screenshot_dir, s.audio_dir):
+    for path in (DATA_DIR, CONFIG_DIR, CACHE_DIR, STATE_DIR,
+                 s.screenshot_dir, s.audio_dir, s.documents_dir):
         path.mkdir(parents=True, exist_ok=True)
     s.db_path.parent.mkdir(parents=True, exist_ok=True)

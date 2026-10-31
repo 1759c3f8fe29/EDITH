@@ -1,0 +1,132 @@
+{
+  "analysis": "The proactive AI implementation in NEXUS has the structural foundation (proactive engine, screen monitor, screen.look tool, toast UI) but is missing critical pieces that make it feel like a chatbot rather than Ultron-level AI.",
+  "gaps": {
+    "trigger_model": {
+      "current": "Proactive suggestions ONLY appear on screen.change events from screen monitor (passive)",
+      "gap": "No continuous ambient awareness - no proactive monitoring of clipboard, notifications, window focus, system state, or user activity patterns",
+      "impact": "AI only speaks up when pixels change significantly (>8%), missing context switches, errors, meetings, builds, deployments, messages arriving"
+    },
+    "action_execution": {
+      "current": "ProactiveToast action button only logs to console: console.log('Proactive action triggered:', action)",
+      "gap": "Action button does NOT invoke the tool via API - handleProactiveAct in App.tsx is a no-op stub",
+      "impact": "User clicks 'Describe screen' and nothing happens - the toast dismisses but no tool runs"
+    },
+    "voice_tts": {
+      "current": "Zero voice/TTS integration in proactive engine or toast",
+      "gap": "No proactive.speaking event, no TTS for announcements, no voice personality",
+      "impact": "Silent AI that only shows visual toasts - no 'Jarvis' voice presence"
+    },
+    "personality": {
+      "current": "Generic 'NEXUS has a suggestion' summary, technical 'Kind: screen.change' label",
+      "gap": "No personality layer - no tone, no contextual framing, no conversational warmth, no proactive voice",
+      "impact": "Feels like a system notification, not an AI assistant"
+    },
+    "screen_monitor": {
+      "current": "ScreenMonitor exists but defaults OFF (monitor_screen_enabled=false), requires ImageMagick for perceptual diff",
+      "gap": "Monitor not enabled by default, no auto-start on login, Wayland capture often fails without grim",
+      "impact": "Core trigger for proactive suggestions may not even be running"
+    },
+    "continuous_awareness": {
+      "current": "Only screen.change observations flow to proactive engine",
+      "gap": "No clipboard monitoring for copied secrets/errors, no notification monitoring for alerts, no window focus tracking for context switches, no system monitor for CPU/disk/thermal alerts, no git/CI monitoring for build failures",
+      "impact": "AI is blind to everything except pixel changes"
+    },
+    "tool_invocation_path": {
+      "current": "screen.look tool exists and works, tools/execute API exists, but frontend onAct handler doesn't call it",
+      "gap": "Frontend needs to POST to /api/tools/execute with tool name and params, handle permission flow",
+      "impact": "Complete disconnect between toast action and tool runtime"
+    },
+    "attention_model": {
+      "current": "Proactive engine has Attention class but no real events feed it (window.activity, voice.speaking don't exist on bus)",
+      "gap": "Engine's attention.activity stays 'idle', attention.speaking stays false - scoring rules for 'watching'/'call' demotion never trigger",
+      "impact": "Engine can't respect user focus state - may interrupt during calls/meetings"
+    },
+    "rate_limiting": {
+      "current": "RateGate exists (10min cooldown), screen_offer_cooldown=180s, quiet hours support",
+      "gap": "No learning/adaptive throttling, no user feedback loop to tune sensitivity",
+      "impact": "Fixed cooldowns either spam or miss important moments"
+    },
+    "suggestion_content": {
+      "current": "Only screen.change offers with hardcoded 'Describe screen' action",
+      "gap": "No suggestions for: clipboard secrets detected, notification alerts, build failures, high CPU, meeting starting, window context switch, error dialogs",
+      "impact": "Single trick pony - only offers screen description"
+    }
+  },
+  "what_is_needed_for_ultron_level": {
+    "1_enable_and_verify_screen_monitor": {
+      "action": "Set monitor_screen_enabled=true, monitor_screen_interval_seconds=30, install scrot/grim + ImageMagick",
+      "verify": "GET /api/monitors/screen shows frames[] growing, detection_method='perceptual'"
+    },
+    "2_wire_toast_action_to_tool_execution": {
+      "action": "Replace handleProactiveAct stub in App.tsx with actual API call to POST /api/tools/execute",
+      "code": "await api.tools.execute(action.tool, action.params, conversationId, taskId)",
+      "handle_permission": "If 409/permission required, show PermissionDialog automatically"
+    },
+    "3_add_tts_for_proactive_announcements": {
+      "action": "Integrate Mistral Voxtral or system TTS in proactive engine _deliver()",
+      "voice_events": "Publish voice.speaking=true/false on bus for attention model",
+      "personality": "Add tone/personality layer - configurable voice, contextual phrasing"
+    },
+    "4_expand_observation_sources": {
+      "clipboard_monitor": "Already exists (ClipboardMonitor) - wire to proactive engine for secret/error detection",
+      "notification_monitor": "Already exists (NotificationMonitor) - wire for alert suggestions",
+      "window_monitor": "Already exists (WindowMonitor) - wire for context switch suggestions",
+      "system_monitor": "Already exists (SystemMonitor) - wire for resource alert suggestions",
+      "new_monitors_needed": ["git_monitor (build/CI status)", "calendar_monitor (meeting alerts)", "browser_monitor (tab changes)"]
+    },
+    "5_implement_attention_events": {
+      "window_activity": "Publish window.activity events on focus/blur",
+      "voice_speaking": "Publish voice.speaking events from TTS/voice system",
+      "idle_detection": "Publish user.idle/active events"
+    },
+    "6_add_proactive_suggestion_types": {
+      "screen_change": "Current - offer screen.look",
+      "clipboard_secret": "Detect API keys, passwords in clipboard - offer to store in vault",
+      "notification_alert": "Critical notification - offer to summarize/act",
+      "build_failure": "CI/build fail detected - offer to analyze logs",
+      "high_resource": "CPU/disk/thermal threshold - offer to investigate",
+      "meeting_start": "Calendar event starting - offer to prep notes",
+      "error_dialog": "Error window detected - offer to read/fix",
+      "context_switch": "Major app switch - offer relevant context"
+    },
+    "7_continuous_ambient_loop": {
+      "action": "Proactive engine should run continuous evaluation, not just event-driven",
+      "interval": "Every 30-60s evaluate full context (screen + clipboard + notifications + system + windows)",
+      "synthesis": "Cross-correlate observations for higher-level insights"
+    },
+    "8_personality_and_voice": {
+      "voice": "Mistral Voxtral HTTP (base64 WAV) or Piper/Coqui local TTS",
+      "personality_config": "Tone: professional/friendly/minimal, Verbosity: terse/normal/chatty, Proactivity: passive/balanced/aggressive",
+      "contextual_phrasing": "Templates per suggestion kind with variable interpolation"
+    },
+    "9_permission_flow_for_proactive": {
+      "current": "Tool execution requires permission, but proactive toast doesn't handle it",
+      "needed": "Auto-show PermissionDialog when proactive action triggers permission-required tool",
+      "ux": "Toast action -> permission dialog -> tool runs -> result shown in toast or activity"
+    },
+    "10_feedback_learning_loop": {
+      "action": "Track user accept/dismiss/ignore rates per suggestion kind",
+      "adapt": "Auto-tune cooldowns, thresholds, enable/disable kinds based on behavior",
+      "explicit": "User can say 'stop suggesting X' or 'suggest X more'"
+    }
+  },
+  "current_working_pieces": [
+    "ProactiveSuggestion type in nexus.tsx with action tool/params/label",
+    "proactive.suggestion bus event published from engine",
+    "ProactiveToast component in primitives.tsx with action button",
+    "Toast mounted in App.tsx above screens",
+    "Proactive engine with scoring, RateGate, quiet hours, held suggestions",
+    "_offer_screen_description() creates screen.look action payload",
+    "screen.look tool captures screen, sends to vision model, returns description",
+    "ScreenMonitor detects perceptual changes (>8% default)",
+    "/api/tools/execute endpoint with permission gating",
+    "Tool registry with verifiers, capabilities, availability probes"
+  ],
+  "blocking_issues": [
+    "handleProactiveAct in App.tsx is a console.log stub - THE critical disconnect",
+    "ScreenMonitor defaults OFF - no observations without manual enable",
+    "No TTS/voice integration anywhere in proactive path",
+    "Attention model fed by zero real events",
+    "Only one suggestion kind (screen.change) implemented"
+  ]
+}

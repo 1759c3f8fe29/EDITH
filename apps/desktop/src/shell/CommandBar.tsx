@@ -53,8 +53,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Icon } from "../components/Icon";
-import { Button, IconButton, Select } from "../components/primitives";
-import { api, ApiError } from "../lib/api";
+import { Button, IconButton, Select, StatusPill } from "../components/primitives";
+import { api, type ModelSpec, ApiError } from "../lib/api";
 import { useWake, type WakeState } from "../lib/useWake";
 import { useNexus } from "../state/nexus";
 import { useTurn, type SendInput } from "../state/turn";
@@ -71,10 +71,10 @@ const MODES = [
 type Mode = (typeof MODES)[number]["value"];
 
 const MODE_NOTE: Record<Mode, string> = {
-  quick: "Short answers. The default.",
-  detailed: "Full explanations and reasoning.",
-  silent: "Acts and reports the result, with no commentary.",
-  expert: "Routes to the strongest reasoning model, and answers at length.",
+  quick: "Short answers.",
+  detailed: "Full explanations.",
+  silent: "Acts and reports.",
+  expert: "Strongest model, slower.",
 };
 
 const MODE_KEY = "nexus.mode";
@@ -106,6 +106,11 @@ export function CommandBar({ conversationId }: { conversationId: string | null }
   const recorder = useRecorder();
   const [handsFreePaused, setHandsFreePaused] = useState(false);
 
+  // Model selection state
+  const [selectedModel, setSelectedModel] = useState<string>(""); // empty = auto (router)
+  const [availableModels, setAvailableModels] = useState<ModelSpec[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+
   useEffect(() => {
     try {
       window.localStorage.setItem(MODE_KEY, mode);
@@ -114,6 +119,54 @@ export function CommandBar({ conversationId }: { conversationId: string | null }
     }
   }, [mode]);
 
+  // Load available models for the model selector - only working models with streaming
+  useEffect(() => {
+    let mounted = true;
+    const loadModels = async () => {
+      setModelsLoading(true);
+      try {
+        const result = await api.models.overview();
+        const models: ModelSpec[] = [];
+        const blockedModels = new Set(Object.keys(result.probes.blocked));
+        for (const provider of result.providers) {
+          if (provider.configured) {
+            for (const model of provider.models) {
+              // Only include models that support streaming and are not blocked
+              if (model.supports_streaming && !blockedModels.has(model.key)) {
+                models.push({ ...model, provider: provider.name });
+              }
+            }
+          }
+        }
+        // Add Groq models (only those with tools and not blocked)
+        for (const provider of result.providers) {
+          if (provider.id === "groq" && provider.configured) {
+            for (const model of provider.models) {
+              if (
+                model.supports_streaming &&
+                model.supports_tools &&
+                !blockedModels.has(model.key)
+              ) {
+                models.push({ ...model, provider: "Groq" });
+              }
+            }
+          }
+        }
+        if (mounted) {
+          setAvailableModels(models);
+        }
+      } catch (e) {
+        console.warn("Failed to load models:", e);
+      } finally {
+        if (mounted) {
+          setModelsLoading(false);
+        }
+      }
+    };
+    loadModels();
+    return () => { mounted = false; };
+  }, []);
+
   const submit = (spoken?: string) => {
     const message = (spoken ?? text).trim();
     if (!message || running) return;
@@ -121,6 +174,7 @@ export function CommandBar({ conversationId }: { conversationId: string | null }
       message,
       conversationId: conversationId ?? turn?.conversationId ?? null,
       mode,
+      model: selectedModel || null, // null = use router
       attachments: attachments.map(({ data, media_type }) => ({ data, media_type })),
       // With speech on, the turn goes through `/api/voice/converse`, which speaks each
       // sentence as it is written instead of synthesising the finished answer. The
@@ -331,23 +385,6 @@ export function CommandBar({ conversationId }: { conversationId: string | null }
           </span>
           <span className="min-w-0 flex-1 truncate">{handsFree.text}</span>
 
-          {(wake.state === "waiting" || wake.state === "hearing" || wake.state === "calibrating") && (
-            <span
-              aria-hidden
-              title={`Loudness ${wake.level.toFixed(3)}, speech starts at ${wake.threshold.toFixed(3)}`}
-              className="relative h-1 w-16 shrink-0 overflow-hidden bg-raised"
-            >
-              <span
-                className="absolute inset-y-0 left-0 bg-accent"
-                style={{ width: `${Math.min(100, wake.level * 400)}%` }}
-              />
-              <span
-                className="absolute inset-y-0 w-px bg-ink"
-                style={{ left: `${Math.min(100, wake.threshold * 400)}%` }}
-              />
-            </span>
-          )}
-
           {wake.remaining <= 5 && wake.state !== "off" && wake.state !== "stopped" && (
             <span className="shrink-0 font-mono text-[10px] text-ink-faint">
               {wake.remaining} left this minute
@@ -374,34 +411,6 @@ export function CommandBar({ conversationId }: { conversationId: string | null }
         </div>
       )}
 
-      {voice.problem && (
-        <p className="flex items-start gap-2 border-b border-warn/30 bg-warn/8 px-3 py-1.5 text-[11px] text-warn">
-          <Icon name="volume" size={12} className="mt-0.5 shrink-0" />
-          <span className="flex-1">{voice.problem}</span>
-          <IconButton
-            name="close"
-            label="Dismiss"
-            size={11}
-            onClick={() => voice.clearProblem()}
-          />
-        </p>
-      )}
-
-      {(voice.speaking || voice.synthesizing) && (
-        <p className="flex items-center gap-2 border-b border-accent/30 bg-accent/8 px-3 py-1.5 text-[11px] text-accent">
-          <Icon name="volume" size={12} />
-          <span className="flex-1 truncate">
-            {voice.synthesizing ? "Synthesising the answer..." : voice.spoken}
-          </span>
-          {voice.note && <span className="shrink-0 text-ink-faint">{voice.note}</span>}
-          {voice.speaking && (
-            <Button size="sm" icon="stop" onClick={voice.stop}>
-              Silence
-            </Button>
-          )}
-        </p>
-      )}
-
       <div className="flex items-end gap-2 px-3 py-2">
         <textarea
           ref={box}
@@ -426,6 +435,36 @@ export function CommandBar({ conversationId }: { conversationId: string | null }
               value={mode}
               onChange={setMode}
               options={MODES.map((entry) => ({ value: entry.value, label: entry.label }))}
+            />
+          </div>
+
+          <div className="w-[320px]">
+            <Select<string>
+              value={selectedModel}
+              onChange={setSelectedModel}
+              options={[
+                { value: "", label: "AUTO (router)" },
+                ...availableModels.map((m) => ({ value: `${m.provider}:${m.id}`, label: `${m.provider} · ${m.label}` })),
+              ]}
+              disabled={modelsLoading}
+              renderOption={(opt) => {
+                if (!opt.value) return opt.label;
+                const model = availableModels.find((m) => `${m.provider}:${m.id}` === opt.value);
+                if (!model) return opt.label;
+                const badges: Array<{label: string; state: "ok" | "active" | "idle"}> = [];
+                if (model.supports_tools) badges.push({ label: "tools", state: "ok" });
+                if (model.supports_vision) badges.push({ label: "vision", state: "active" });
+                if (model.supports_streaming) badges.push({ label: "stream", state: "ok" });
+                if (model.free) badges.push({ label: "free", state: "idle" });
+                return (
+                  <span className="flex items-center gap-1.5">
+                    <span>{opt.label}</span>
+                    {badges.map((b) => (
+                      <StatusPill key={b.label} state={b.state} size="sm">{b.label.toUpperCase()}</StatusPill>
+                    ))}
+                  </span>
+                );
+              }}
             />
           </div>
 
@@ -495,10 +534,10 @@ export function CommandBar({ conversationId }: { conversationId: string | null }
       </div>
 
       <p className="px-3 pb-1.5 font-mono text-[10px] text-ink-faint">
-        {MODE_NOTE[mode]} Enter sends, Shift+Enter starts a new line.
-        {voice.voiceEnabled && " Speaking sends what was heard."}
-        {voice.wakeWordEnabled && ` Say "${voice.wakeWord}" to talk without pressing anything.`}
-        {voice.ttsEnabled && " Answers are spoken."}
+        {MODE_NOTE[mode]}
+        {voice.voiceEnabled && " Voice sends."}
+        {voice.wakeWordEnabled && ` Say "${voice.wakeWord}".`}
+        {voice.ttsEnabled && " Spoken answers."}
       </p>
     </div>
   );

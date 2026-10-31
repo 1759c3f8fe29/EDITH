@@ -218,6 +218,39 @@ CAPABILITIES: tuple[Capability, ...] = (
         consequence="NEXUS can request content from addresses on the internet and read what comes back.",
         scoped=True,
     ),
+    # Separate from browser.open and net.fetch because those are one-shot and
+    # blind: they ask the desktop for a page, or download one, and then know
+    # nothing about it. This one holds a live, stateful session that can type
+    # into fields and press buttons, which is a different power with a different
+    # consequence, and folding it into either of the others would hand it over
+    # on a consent the user gave for something smaller.
+    #
+    # ``scoped=False`` is deliberate. Scoping it to a hostname would look
+    # reassuring and be false: the scope for a ``browser.navigate`` is the
+    # address it was given, but a following ``browser.click`` on a link leaves
+    # that host and nothing re-derives a scope for it -- the grant would name a
+    # domain the session is no longer on. High risk already means the grant
+    # kinds are ("once", "session"), so the wide scope is time-bounded rather
+    # than permanent, which is the honest shape for a power this broad.
+    Capability(
+        name="browser.drive",
+        group="Browser",
+        title="Control a web browser",
+        description=(
+            "Open pages in a browser NEXUS controls, read what they render, and click "
+            "and type on them."
+        ),
+        risk="high",
+        reversible=False,
+        consequence=(
+            "NEXUS can read and change the contents of web pages, including submitting "
+            "forms and pressing buttons that spend money, send messages or delete "
+            "things. It uses its own browser with no logins of yours in it, so it "
+            "cannot act as you on sites you are signed in to -- but a site that needs "
+            "no login can still be acted on."
+        ),
+        scoped=False,
+    ),
     # ---------------------------------------------------------------- system
     Capability(
         name="system.info",
@@ -459,6 +492,16 @@ CAPABILITIES: tuple[Capability, ...] = (
         consequence="NEXUS can save facts about you to its long-term memory, where they will be used in future conversations.",
     ),
     Capability(
+        name="memory.read",
+        group="Memory",
+        title="Read remembered things",
+        description="Read the long-term memories NEXUS has stored.",
+        risk="low",
+        reversible=True,
+        consequence="NEXUS can read the facts it has stored about you in long-term memory. This is your own memory, not anyone else's.",
+        implicit=True,
+    ),
+    Capability(
         name="memory.delete",
         group="Memory",
         title="Forget things",
@@ -501,6 +544,19 @@ CAPABILITIES: tuple[Capability, ...] = (
             "NEXUS can read the notifications other applications show you, including "
             "their text. Anything that looks like a password or key is counted but "
             "never stored."
+        ),
+    ),
+    Capability(
+        name="context.read",
+        group="Awareness",
+        title="Read application context",
+        description="Get contextual information about the current application and recent activity.",
+        risk="low",
+        reversible=True,
+        consequence=(
+            "NEXUS can read your recent window activity and application usage to provide "
+            "contextual assistance. This is derived from the window monitor you already "
+            "enabled."
         ),
     ),
     Capability(

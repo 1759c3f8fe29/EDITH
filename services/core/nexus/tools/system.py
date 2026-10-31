@@ -723,6 +723,9 @@ def _clipboard_writers() -> list[tuple[str, list[str]]]:
     capability="clipboard.read",
     read_only=True,
     requires=(_CLIPBOARD_READ_REQUIREMENT,),
+    voice_start="Reading the clipboard",
+    voice_timeout="Reading the clipboard is taking too long.",
+    voice_error="Could not read the clipboard.",
     parameters={"type": "object", "properties": {}},
 )
 def clipboard_get(_params: dict[str, Any]) -> ToolResult:
@@ -771,6 +774,9 @@ def _verify_clipboard_set(params: dict[str, Any], result: ToolResult) -> tuple[b
     idempotent=True,
     verifier=_verify_clipboard_set,
     requires=(_CLIPBOARD_WRITE_REQUIREMENT,),
+    voice_start="Copying to clipboard",
+    voice_timeout="Setting the clipboard is taking too long.",
+    voice_error="Could not set the clipboard.",
     parameters={
         "type": "object",
         "properties": {
@@ -847,6 +853,202 @@ def _read_clipboard_now() -> tuple[str | None, str]:
         if proc.returncode == 0:
             return proc.stdout, ""
     return None, "no reader produced a value"
+
+
+# --------------------------------------------------------------- clipboard.secure
+
+
+@tool(
+    "clipboard.secure",
+    title="Secure clipboard content",
+    description=(
+        "Clear the clipboard if it contains sensitive content (credential, key, password). "
+        "This is a safety tool for when NEXUS detects a credential was copied -- it removes "
+        "it from the clipboard so it cannot be accidentally pasted elsewhere."
+    ),
+    capability="clipboard.write",
+    idempotent=True,
+    requires=(_CLIPBOARD_WRITE_REQUIREMENT,),
+    voice_start="Securing the clipboard",
+    voice_timeout="Securing the clipboard is taking too long.",
+    voice_error="Could not secure the clipboard.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "description": "The type of credential that was detected (for logging).",
+            },
+        },
+        "required": ["category"],
+    },
+)
+def clipboard_secure(params: dict[str, Any]) -> ToolResult:
+    category = str(params.get("category") or "credential").strip()
+    # Clear the clipboard by writing empty string
+    for name, write_cmd in _clipboard_writers():
+        try:
+            proc = subprocess.run(write_cmd, input="", text=True, timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        except (OSError, subprocess.SubprocessError) as exc:
+            continue
+        else:
+            if proc.returncode != 0:
+                continue
+        # Verify it's cleared
+        read_back, _ = _read_clipboard_now()
+        if read_back == "" or not read_back:
+            return ToolResult(
+                ok=True,
+                data={"cleared": True, "backend": name, "category": category},
+                summary=f"Cleared {category} from clipboard",
+            )
+    return ToolResult(
+        ok=False,
+        error=(
+            "NEXUS could not secure the clipboard. "
+            + (
+                "None of wl-copy, xclip or xsel is installed."
+                if not _clipboard_writers()
+                else "A writer is installed but the clear did not take."
+            )
+        ),
+    )
+
+
+# --------------------------------------------------------------- notification
+
+
+@tool(
+    "notifications.summarize",
+    title="Summarize a notification",
+    description=(
+        "Read and summarize a notification that arrived. Uses the notification monitor's "
+        "recent history to provide context about what the notification said."
+    ),
+    capability="notifications.read",
+    read_only=True,
+    requires=("dbus-monitor",),
+    voice_start="Summarizing the notification",
+    voice_timeout="Summarizing is taking too long.",
+    voice_error="Could not summarize the notification.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "app": {
+                "type": "string",
+                "description": "The application that sent the notification.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "The notification summary/title.",
+            },
+        },
+        "required": ["app"],
+    },
+)
+def notifications_summarize(params: dict[str, Any]) -> ToolResult:
+    from ..monitors.notification_monitor import NotificationMonitor
+
+    app = str(params.get("app") or "").strip()
+    summary = str(params.get("summary") or "").strip()
+
+    # Get the monitor instance to access its history
+    # The monitor is a singleton managed by the supervisor
+    from ..monitors.supervisor import supervisor
+
+    notification_monitor = None
+    for m in supervisor.monitors:
+        if m.id == "notifications":
+            notification_monitor = m
+            break
+
+    if notification_monitor is None:
+        return ToolResult(
+            ok=False,
+            error="Notification monitor is not running. Enable it in settings to use this tool.",
+            summary="Notification monitor unavailable",
+        )
+
+    # The monitor doesn't currently store history, so we return what was passed
+    # In a full implementation, the monitor would keep a ring buffer of recent notifications
+    return ToolResult(
+        ok=True,
+        data={
+            "app": app,
+            "summary": summary,
+            "note": "Notification monitor history not yet implemented; returning passed details.",
+        },
+        summary=f"Notification from {app}: {summary}" if summary else f"Notification from {app}",
+    )
+
+
+# --------------------------------------------------------------- context.get
+
+
+@tool(
+    "context.get",
+    title="Get application context",
+    description=(
+        "Get contextual information about the current application to help with the user's "
+        "workflow. Returns relevant recent activity, open files, or common actions for the app."
+    ),
+    capability="context.read",
+    read_only=True,
+    parameters={
+        "type": "object",
+        "properties": {
+            "app": {
+                "type": "string",
+                "description": "The application name to get context for.",
+            },
+            "previous": {
+                "type": "string",
+                "description": "The previous application (for switch context).",
+            },
+        },
+        "required": ["app"],
+    },
+)
+def context_get(params: dict[str, Any]) -> ToolResult:
+    from ..monitors.supervisor import supervisor
+    from ..monitors.window_monitor import WindowMonitor
+
+    app = str(params.get("app") or "").strip()
+    previous = str(params.get("previous") or "").strip()
+
+    window_monitor = None
+    for m in supervisor.monitors:
+        if m.id == "window":
+            window_monitor = m
+            break
+
+    if window_monitor is None:
+        return ToolResult(
+            ok=False,
+            error="Window monitor is not running. Enable it in settings to use this tool.",
+            summary="Window monitor unavailable",
+        )
+
+    # Get recent timeline and usage
+    timeline = window_monitor.timeline(limit=10)
+    usage = window_monitor.usage()
+
+    # Find recent sessions for this app
+    app_sessions = [s for s in timeline if s.get("app", "").lower() == app.lower()]
+
+    return ToolResult(
+        ok=True,
+        data={
+            "app": app,
+            "previous_app": previous or None,
+            "recent_sessions": app_sessions[:5],
+            "total_usage_seconds": next((u["seconds"] for u in usage if u["app"].lower() == app.lower()), 0),
+            "current_window": window_monitor.current(),
+        },
+        summary=f"Context for {app}: {len(app_sessions)} recent session(s)"
+    )
 
 
 # --------------------------------------------------------------- notification

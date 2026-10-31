@@ -162,6 +162,8 @@ export type SendInput = ChatInput & {
   language?: string | null;
   /** Which voice to speak in. Empty means the `tts_voice` setting. */
   voice?: string | null;
+  /** Direct model key (provider:model) to bypass the router. Empty = auto (use router). */
+  model?: string | null;
 };
 
 export type TurnValue = {

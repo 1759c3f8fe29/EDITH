@@ -16,7 +16,14 @@ from __future__ import annotations
 from typing import Any
 
 from ..logging_setup import get_logger
-from . import mistral_audio, nim_catalogue, nim_media, nvidia_speech, speech
+from . import (
+    groq_audio,
+    mistral_audio,
+    nim_catalogue,
+    nim_media,
+    nvidia_speech,
+    speech,
+)
 from .base import (
     Attachment,
     ChatRequest,
@@ -30,7 +37,13 @@ from .base import (
     VerificationResult,
 )
 from .anthropic import AnthropicProvider
-from .openai_compat import MistralProvider, NvidiaProvider, OpenAIProvider
+from .openai_compat import (
+    GroqProvider,
+    MistralProvider,
+    NvidiaProvider,
+    OpenAIProvider,
+    OpenRouterProvider,
+)
 
 log = get_logger("providers")
 
@@ -45,6 +58,10 @@ _CLASSES: tuple[type[Provider], ...] = (
     AnthropicProvider,
     NvidiaProvider,
     OpenAIProvider,
+    OpenRouterProvider,
+    # Last in the listing order, but it *heads the stt chain* -- that is a routing
+    # decision made on a measurement, not on seniority. See GroqProvider.
+    GroqProvider,
 )
 
 _INSTANCES: dict[str, Provider] = {}
@@ -157,6 +174,7 @@ __all__ = [
     "configured",
     "find_model",
     "get",
+    "groq_audio",
     "mistral_audio",
     "nim_catalogue",
     "nim_media",

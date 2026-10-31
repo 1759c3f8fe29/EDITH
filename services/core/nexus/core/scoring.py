@@ -355,6 +355,16 @@ class Attention:
         """Whether an ordinary notification is welcome right now."""
         return not self.speaking and self.activity not in ("call", "watching")
 
+    def replace(self, *, activity: Activity | None = None, speaking: bool | None = None,
+                focus_topic: str | None = None, recent_notifications: int | None = None) -> "Attention":
+        """Return a new Attention with specified fields updated."""
+        return Attention(
+            activity=activity if activity is not None else self.activity,
+            speaking=speaking if speaking is not None else self.speaking,
+            focus_topic=focus_topic if focus_topic is not None else self.focus_topic,
+            recent_notifications=recent_notifications if recent_notifications is not None else self.recent_notifications,
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "activity": self.activity,

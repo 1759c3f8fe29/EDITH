@@ -21,8 +21,7 @@
  */
 
 import { Icon } from "./Icon";
-import { DataRow, Section, StatusPill, duration } from "./primitives";
-import type { Preview } from "../lib/api";
+import { StatusPill, duration } from "./primitives";
 import { isConfident, type ContextInfo, type IntentInfo, type RoutingInfo, type ToolRunInfo } from "../lib/chat";
 import { turnSentence, type LiveCall, type LiveTurn } from "../state/turn";
 
@@ -42,15 +41,6 @@ export function TurnView({ turn, compact = false }: { turn: LiveTurn; compact?: 
       {turn.routing && <RoutingBlock routing={turn.routing} intent={turn.intent} />}
 
       {!compact && turn.context && <ContextBlock context={turn.context} />}
-
-      {turn.reasoning && (
-        <div className="chamfer-sm border border-line bg-base px-2.5 py-2">
-          <span className="label">Model reasoning, as sent</span>
-          <p className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink-soft">
-            {turn.reasoning}
-          </p>
-        </div>
-      )}
 
       {turn.calls.length > 0 && (
         <div className="flex flex-col gap-2">
@@ -95,6 +85,18 @@ export function TurnView({ turn, compact = false }: { turn: LiveTurn; compact?: 
             <span className="ml-1.5 font-mono text-[10px] text-danger/70">({turn.errorKind})</span>
           )}
         </p>
+      )}
+
+      {turn.reasoning && (
+        <details className="chamfer-sm border border-line bg-base px-2.5 py-2">
+          <summary className="flex items-center gap-2 cursor-pointer label">
+            <span>Model reasoning (collapsed)</span>
+            <Icon name="chevron-down" size={12} className="text-ink-dim" />
+          </summary>
+          <p className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-ink-soft">
+            {turn.reasoning}
+          </p>
+        </details>
       )}
 
       {turn.finished && !compact && <UsageBlock turn={turn} />}
@@ -177,50 +179,32 @@ function PhaseLine({ turn }: { turn: LiveTurn }) {
 /**
  * The spoken half of the answer: which voice said it, how much of it has audio, and
  * every sentence that has none (§30, §57, §61).
- *
- * Three facts here are carried by nothing else on the screen.
- *
- * The **voice is named** because a substitution must not read as a choice: the route
- * falls back to the provider's default when the requested voice is unavailable, and that
- * fallback is only visible if the voice actually used is printed.
- *
- * The **counts** are the queue. "6 of 8 sentences with audio" while a turn runs is a
- * real state, and a spinner in its place would be a guess about a fact the core already
- * sent.
- *
- * The **failures are listed one by one**, with the sentence and the provider's reason,
- * because silence where a sentence should have been is indistinguishable from the
- * assistant having nothing to say. That is the §61 failure this whole path exists to
- * avoid, and it cannot be avoided by the audio alone — only by saying so on screen.
- *
- * Code is counted rather than quoted: the segmenter says "a code block" out loud instead
- * of reciting forty seconds of punctuation, and this row is where the user finds out
- * that is what happened to it.
  */
 function SpeechBlock({ turn }: { turn: LiveTurn }) {
   const { segments, speech, speechErrors, voice } = turn;
   if (!voice && segments.length === 0 && speech.length === 0 && speechErrors.length === 0) {
-    // A typed, silent turn. An empty "Spoken" section would imply speech was attempted.
     return null;
   }
-  const described = segments.filter((segment) => segment.source !== null);
+  const described = segments.filter((segment) => segment.source !== null).length;
   return (
-    <Section
-      title="Spoken"
-      meta={
-        segments.length > 0
-          ? `${speech.length} of ${segments.length} sentence${segments.length === 1 ? "" : "s"} with audio`
-          : undefined
-      }
-    >
-      <div className="flex flex-col">
-        <SpeechRows voice={voice} described={described.length} />
+    <div className="chamfer-sm border border-line bg-base px-2.5 py-2">
+      <span className="label">Spoken</span>
+      <div className="mt-1 flex flex-col gap-1 text-[11px] leading-relaxed text-ink-soft">
+        {voice && (
+          <span>Voice: {voice.voice || "the provider default"} · {voice.model}</span>
+        )}
+        {segments.length > 0 && (
+          <span>{speech.length} of {segments.length} sentence{segments.length === 1 ? "" : "s"} with audio</span>
+        )}
+        {described > 0 && (
+          <span>{described} code block{described === 1 ? "" : "s"} named rather than read out</span>
+        )}
         {speechErrors.length > 0 && (
-          <div className="px-3 py-1">
-            <span className="label text-warn">Not spoken</span>
+          <div>
+            <span className="text-warn">Not spoken</span>
             <ul className="mt-0.5 flex flex-col gap-1">
               {speechErrors.map((failed) => (
-                <li key={failed.index} className="text-[11px] leading-relaxed text-warn">
+                <li key={failed.index} className="text-warn">
                   <span className="font-mono text-[10px] text-warn/70">#{failed.index + 1}</span>{" "}
                   {failed.text.trim() || "an empty sentence"} — {failed.error}
                 </li>
@@ -229,156 +213,92 @@ function SpeechBlock({ turn }: { turn: LiveTurn }) {
           </div>
         )}
       </div>
-    </Section>
-  );
-}
-
-/** The two rows above the failures, split out only to keep `SpeechBlock` readable. */
-function SpeechRows({
-  voice,
-  described,
-}: {
-  voice: LiveTurn["voice"];
-  described: number;
-}) {
-  return (
-    <>
-      {voice ? (
-        <DataRow
-          label="Voice"
-          value={`${voice.voice || "the provider default"} · ${voice.model}`}
-          state="ok"
-          title="The voice that actually spoke, which is not always the one that was asked for."
-        />
-      ) : (
-        <p className="px-3 py-1 text-[11px] leading-relaxed text-ink-dim">
-          The core named no voice for this turn, so the answer is on screen and not out
-          loud.
-        </p>
-      )}
-      {described > 0 && (
-        <DataRow
-          label="Described"
-          value={`${described} code block${described === 1 ? "" : "s"} named rather than read out`}
-          title="Reciting code aloud is unusable, so the voice says what it is and the text stays on screen."
-        />
-      )}
-    </>
+    </div>
   );
 }
 
 /**
  * Why this model (§15, §26).
- *
- * `considered` and `fallbacks` are shown because "the router picked Nemotron" is not an
- * answer to "why" — the answer is which candidates it had, in what order, and what it
- * would fall back to. `warnings` is where the router says a preferred model was
- * unavailable, and hiding that would present a substitution as a choice (§30).
  */
 function RoutingBlock({ routing, intent }: { routing: RoutingInfo; intent: IntentInfo | null }) {
   return (
-    <Section title="Routing" meta={`${routing.job} · ${routing.transport}`}>
-      <div className="flex flex-col">
-        <DataRow label="Model" value={routing.label} state="ok" />
-        <DataRow label="Provider" value={`${routing.provider} · ${routing.model}`} />
-        <DataRow label="Because" value={routing.reason} />
+    <details className="chamfer-sm border border-line bg-base px-2.5 py-2">
+      <summary className="flex items-center gap-2 cursor-pointer label">
+        <span>Routing ({routing.job})</span>
+        <Icon name="chevron-down" size={12} className="text-ink-dim" />
+      </summary>
+      <div className="mt-2 flex flex-col gap-1.5 text-[11px] leading-relaxed text-ink-soft">
+        <div><span className="font-mono">Model:</span> {routing.label}</div>
+        <div><span className="font-mono">Provider:</span> {routing.provider} · {routing.model}</div>
+        <div><span className="font-mono">Because:</span> {routing.reason}</div>
         {intent && (
           <>
-            <DataRow label="Read as" value={`${intent.intent} → ${intent.job}`} />
-            <DataRow
-              label="Confidence"
-              value={
-                isConfident(intent)
-                  ? `${intent.score.toFixed(2)} — confident`
-                  : `${intent.score.toFixed(2)} — not confident, so tools stayed attached`
-              }
-              state={isConfident(intent) ? "ok" : "pending"}
-            />
+            <div><span className="font-mono">Read as:</span> {intent.intent} → {intent.job}</div>
+            <div className={isConfident(intent) ? "text-ok" : "text-warn"}>
+              <span className="font-mono">Confidence:</span> {intent.score.toFixed(2)} —
+              {isConfident(intent) ? "confident" : "not confident, so tools stayed attached"}
+            </div>
             {intent.signals.length > 0 && (
-              <DataRow label="Signals" value={intent.signals.join(", ")} />
+              <div><span className="font-mono">Signals:</span> {intent.signals.join(", ")}</div>
             )}
           </>
         )}
         {routing.considered.length > 0 && (
-          <DataRow
-            label="Considered"
-            value={routing.considered.map((item) => item.key).join(" → ")}
-            title="In preference order. The first reachable one answers."
-          />
+          <div className="text-ink-dim"><span className="font-mono">Considered:</span> {routing.considered.map((item) => item.key).join(" → ")}</div>
         )}
         {routing.fallbacks.length > 0 && (
-          <DataRow
-            label="Fallbacks"
-            value={routing.fallbacks.map((item) => item.key).join(" → ")}
-            title="Used only if the chosen model fails."
-          />
+          <div className="text-ink-dim"><span className="font-mono">Fallbacks:</span> {routing.fallbacks.map((item) => item.key).join(" → ")}</div>
         )}
         {routing.warnings.map((warning, index) => (
-          <p key={index} className="px-3 py-1 text-[11px] leading-relaxed text-warn">
-            {warning}
-          </p>
+          <p key={index} className="text-warn">{warning}</p>
         ))}
       </div>
-    </Section>
+    </details>
   );
 }
 
 /**
  * What went into the prompt, and what did not fit (§45).
- *
- * `dropped` is the reason this block exists. A model that answered without the memory
- * it needed answered differently, and the user is the only one who can tell whether
- * that mattered — so what was shed is stated rather than being an internal detail.
  */
 function ContextBlock({ context }: { context: Partial<ContextInfo> }) {
   const blocks = context.blocks ?? [];
   const tokens = context.tokens;
   const budget = context.budget;
-  // An unstarted turn has `context: {}` — the assembler had not run. Rendering a
-  // "0 tokens of 0" row would claim it assembled an empty context, which is different.
   if (blocks.length === 0 && tokens === undefined) return null;
   return (
-    <Section
-      title="Context"
-      meta={
-        tokens !== undefined && budget !== undefined
-          ? `${tokens.toLocaleString()} of ${budget.toLocaleString()} tokens`
-          : undefined
-      }
-    >
-      <div className="flex flex-col">
+    <details className="chamfer-sm border border-line bg-base px-2.5 py-2">
+      <summary className="flex items-center gap-2 cursor-pointer label">
+        <span>Context</span>
+        {tokens !== undefined && budget !== undefined && (
+          <span className="text-ink-dim font-mono text-[10px]">{tokens.toLocaleString()} of {budget.toLocaleString()} tokens</span>
+        )}
+        <Icon name="chevron-down" size={12} className="text-ink-dim" />
+      </summary>
+      <div className="mt-2 flex flex-col gap-1.5 text-[11px] leading-relaxed text-ink-soft">
         {blocks.map((block, index) => (
-          <DataRow
-            key={`${block.kind}-${index}`}
-            label={block.heading || block.kind}
-            value={`${block.tokens.toLocaleString()} tokens`}
-          />
+          <div key={`${block.kind}-${index}`}><span className="font-mono">{block.heading || block.kind}:</span> {block.tokens.toLocaleString()} tokens</div>
         ))}
         {context.turns !== undefined && (
-          <DataRow label="History" value={`${context.turns} earlier turns`} />
+          <div><span className="font-mono">History:</span> {context.turns} earlier turns</div>
         )}
         {context.memories !== undefined && (
-          <DataRow label="Memories" value={`${context.memories} recalled`} />
+          <div><span className="font-mono">Memories:</span> {context.memories} recalled</div>
         )}
         {(context.dropped ?? []).length > 0 && (
-          <div className="px-3 py-1">
-            <span className="label text-warn">Did not fit</span>
+          <div>
+            <span className="text-warn font-mono">Did not fit:</span>
             <ul className="mt-0.5 flex flex-col gap-0.5">
               {(context.dropped ?? []).map((item, index) => (
-                <li key={index} className="font-mono text-[11px] leading-relaxed text-warn">
-                  {item}
-                </li>
+                <li key={index} className="text-warn font-mono text-[11px]">{item}</li>
               ))}
             </ul>
           </div>
         )}
         {(context.notices ?? []).map((notice, index) => (
-          <p key={index} className="px-3 py-1 text-[11px] leading-relaxed text-ink-dim">
-            {notice}
-          </p>
+          <p key={index} className="text-ink-dim">{notice}</p>
         ))}
       </div>
-    </Section>
+    </details>
   );
 }
 
@@ -441,7 +361,19 @@ function CallBlock({ entry }: { entry: LiveCall }) {
         </div>
       )}
 
-      {preview && <PreviewLine preview={preview} />}
+      {preview && (
+        <div className="mt-1 flex flex-col gap-0.5 text-[11px] leading-relaxed text-ink-soft">
+          <span className="label label-accent">Effect</span>
+          <p className="whitespace-pre-wrap break-words">{preview.effect || "The core described no specific effect for these parameters."}</p>
+          <div className="flex flex-col gap-0.5 border-t border-line/60 pt-1">
+            <span><span className="font-mono">Permission:</span> {preview.permission.outcome} — {preview.permission.reason || "no reason given"}</span>
+            <span><span className="font-mono">Scope:</span> {preview.permission.scope || "*"}</span>
+            <span><span className="font-mono">Will prompt:</span> {preview.will_prompt ? "yes" : "no"}</span>
+            <span className={preview.reversible ? "text-ok" : "text-warn"}><span className="font-mono">Reversible:</span> {preview.reversible ? "yes" : "no"}</span>
+            <span className={preview.verifiable ? "text-ok" : "text-idle"}><span className="font-mono">Verifiable:</span> {preview.verifiable ? "yes" : "no verifier exists"}</span>
+          </div>
+        </div>
+      )}
 
       {result && (
         <>
@@ -477,32 +409,21 @@ function Verification({ result }: { result: ToolRunInfo }) {
   );
 }
 
-/** What the permission layer said about the call before it ran. */
-function PreviewLine({ preview }: { preview: Preview }) {
-  return (
-    <p className="mt-1 font-mono text-[10px] leading-relaxed text-ink-faint">
-      {preview.read_only ? "Read-only. " : ""}
-      {preview.effect}
-      {preview.permission.outcome && ` · permission: ${preview.permission.outcome}`}
-      {preview.permission.reason && ` (${preview.permission.reason})`}
-    </p>
-  );
-}
-
 /** Tokens and latency, from the record rather than measured here (§26, §45). */
 function UsageBlock({ turn }: { turn: LiveTurn }) {
   const finished = turn.finished;
   if (!finished) return null;
   const usage = Object.entries(finished.usage);
   return (
-    <Section title="Cost" meta={`${finished.rounds} round${finished.rounds === 1 ? "" : "s"}`}>
-      <div className="flex flex-col">
-        <DataRow label="Latency" value={duration(finished.latency_ms)} />
+    <div className="chamfer-sm border border-line bg-base px-2.5 py-2">
+      <span className="label">Cost</span>
+      <div className="mt-1 flex flex-col gap-0.5 text-[11px] leading-relaxed text-ink-soft">
+        <span>Latency: {duration(finished.latency_ms)}</span>
         {usage.map(([key, value]) => (
-          <DataRow key={key} label={key.replace(/_/g, " ")} value={value.toLocaleString()} />
+          <span key={key}>{key.replace(/_/g, " ")}: {value.toLocaleString()}</span>
         ))}
-        {finished.message_id && <DataRow label="Message" value={finished.message_id} />}
+        {finished.message_id && <span>Message: {finished.message_id}</span>}
       </div>
-    </Section>
+    </div>
   );
 }
